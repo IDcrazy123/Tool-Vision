@@ -2,7 +2,8 @@
 
 Tool Vision measures relative **X, Y, and Z tool offsets** on Klipper
 toolchanger printers by combining an upward-facing nozzle camera with a fixed
-microswitch.
+microswitch. The camera may be dedicated or removable; a chamber camera can be
+placed on a repeatable keyed/magnetic calibration mount only when needed.
 
 The project keeps the strongest ideas from kTAMV and Axiscope while removing
 their hardware assumptions:
@@ -166,6 +167,12 @@ curl -fsSL \
 bash /tmp/tool-vision-install.sh
 ```
 
+For a production printer, stage the runtime without restarting Klipper:
+
+```bash
+bash /tmp/tool-vision-install.sh --no-restart
+```
+
 The script downloads a temporary source archive, copies only the required
 runtime files into `~/printer_data/tool-vision`, and removes the temporary
 archive when it exits. Tests, documentation, Axiscope, kTAMV, and Git metadata
@@ -190,23 +197,31 @@ TOOL_VISION_PORT=8085 \
 ```
 
 It installs an isolated venv, links the Klipper extension to the persisted
-runtime, generates a systemd unit from the real paths, replaces the legacy
-`tool_vision.service`, and restarts Klipper. Existing `tool_vision.cfg` values
-are preserved and `printer.cfg` is never edited automatically.
+runtime, generates a systemd unit from the real paths, and replaces the legacy
+`tool_vision.service`. By default it restarts Klipper; `--no-restart` or
+`TOOL_VISION_RESTART_KLIPPER=0` stages the installation for a controlled
+configuration switchover. Existing `tool_vision.cfg` values are preserved and
+`printer.cfg` is never edited automatically.
 
 ## Required hardware configuration
 
-1. Mount and configure an upward-facing nozzle camera.
-2. With T0 active, manually place the nozzle at the intended optical focus.
-3. Record `camera_x_pos`, `camera_y_pos`, and `camera_z_pos`.
-4. Choose `camera_safe_z` high enough to clear all stationary hardware before
+1. Mount the camera in its calibration fixture. For a dual-purpose camera,
+   remove it from the chamber-view position and seat it on the repeatable
+   keyed/magnetic bed mount.
+2. Verify the upward image is stable and the mount cannot rock or slide.
+3. With T0 active, manually place the nozzle at the intended optical focus.
+4. Record `camera_x_pos`, `camera_y_pos`, and `camera_z_pos` in the machine's
+   `.cfg`; Tool Vision never invents these values.
+5. Choose `camera_safe_z` high enough to clear all stationary hardware before
    XY station travel.
-5. Measure the Z-switch X/Y/contact Z and choose `zswitch_safe_z`.
-6. Verify switch pin polarity with a read-only endstop query before probing.
-7. Set all motion speeds conservatively for the target machine.
+6. Manually jog T0 to the Z-switch center/contact, record its X/Y/Z in `.cfg`,
+   and choose `zswitch_safe_z`.
+7. Verify switch pin polarity with a read-only endstop query before probing.
+8. Set all motion speeds conservatively for the target machine.
 
-Camera station values are intentionally commented in the example config. Tool
-Vision refuses movement until all four values exist.
+Camera and switch station values are intentionally commented in the example
+config. Tool Vision refuses station movement until the required user-measured
+values exist and that station has been armed for the current Klipper session.
 
 ## Enable on Klipper
 
@@ -222,8 +237,10 @@ Run `FIRMWARE_RESTART` and verify:
 
 ```gcode
 TV_STATUS
+TV_PREFLIGHT
 TV_SERVER_CONFIGURE
 TV_CAMERA_CHECK
+TV_ARM CAMERA=1 SWITCH=1
 ```
 
 The processed frame is available locally at:
@@ -239,20 +256,29 @@ the local network/firewall.
 
 Do not begin with a full five-tool run. Commission in this order:
 
-1. `TV_CAMERA_CHECK` while the clean T0 nozzle is manually visible.
-2. `TV_MOVE_TO_CAMERA` at low speeds; confirm safe-Z-before-XY motion.
-3. `TV_CALIBRATE_CAMERA TOOL=0`; inspect RMS and condition values.
-4. `TV_MEASURE_XY TOOL=0 REFERENCE=1` twice; confirm repeatability.
-5. `TV_MOVE_TO_ZSWITCH`; confirm approach height without probing.
-6. `TV_MEASURE_Z TOOL=0 REFERENCE=1`; repeat and compare trigger Z.
-7. Measure one non-reference tool.
-8. Only then run `TV_CALIBRATE_ALL MODE=XYZ`.
+1. `TV_CAMERA_CHECK` while the clean T0 nozzle is manually visible. This is a
+   no-motion command and can be used before arming.
+2. Recheck the manually measured `.cfg` station values, then run
+   `TV_ARM CAMERA=1 SWITCH=1`.
+3. `TV_MOVE_TO_CAMERA` at low speeds; confirm safe-Z-before-XY motion.
+4. `TV_CALIBRATE_CAMERA TOOL=0`; inspect RMS and condition values. Arming the
+   removable camera invalidates the previous transform, so this is required
+   after every reinstall/reposition.
+5. `TV_MEASURE_XY TOOL=0 REFERENCE=1` twice; confirm repeatability.
+6. `TV_MOVE_TO_ZSWITCH`; confirm approach height without probing.
+7. `TV_MEASURE_Z TOOL=0 REFERENCE=1`; repeat and compare trigger Z.
+8. Measure one non-reference tool.
+9. Only then run `TV_CALIBRATE_ALL MODE=XYZ`.
+10. Run `TV_DISARM` before removing the camera or switch fixture.
 
 ## G-code commands
 
 | Command | Purpose |
 |---|---|
 | `TV_STATUS` | Klipper/server status and last error |
+| `TV_PREFLIGHT` | No-motion integration report: tools, homing, stations, and service |
+| `TV_ARM CAMERA=1 SWITCH=1` | Confirm manually inspected stations for this Klipper session |
+| `TV_DISARM` | Lock station motion and invalidate the removable-camera transform |
 | `TV_SERVER_CONFIGURE` | Send current `.cfg` camera/detector values |
 | `TV_CAMERA_CHECK` | Detect at the current position without motion |
 | `TV_MOVE_TO_CAMERA` | Safe move to the camera station |

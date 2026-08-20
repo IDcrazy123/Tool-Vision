@@ -18,7 +18,7 @@ class ToolVisionError(RuntimeError):
 
 
 class ToolVision:
-    VERSION = "2.0.0"
+    VERSION = "2.2.0"
     STATE_NAME = "TOOL_VISION_STATE"
 
     def __init__(self, config):
@@ -191,6 +191,7 @@ class ToolVision:
         self.zswitch_lift_z = config.getfloat(
             "zswitch_lift_z", 2.0, minval=0.0
         )
+        self.require_manual_arm = config.getboolean("require_manual_arm", True)
         self.probe_speed_ratio = config.getfloat(
             "probe_speed_ratio", 0.5, above=0.0, maxval=1.0
         )
@@ -253,6 +254,7 @@ class ToolVision:
         self.last_observation = None
         self.last_error = None
         self.last_run = None
+        self.armed_stations = set()
 
         self._validate_config(config)
         self._register_commands()
@@ -311,6 +313,18 @@ class ToolVision:
     def _register_commands(self):
         commands = {
             "TV_STATUS": (self.cmd_STATUS, "Show Tool Vision status"),
+            "TV_PREFLIGHT": (
+                self.cmd_PREFLIGHT,
+                "Validate Tool Vision without moving the printer",
+            ),
+            "TV_ARM": (
+                self.cmd_ARM,
+                "Confirm manually measured stations for this session",
+            ),
+            "TV_DISARM": (
+                self.cmd_DISARM,
+                "Disarm all stations before moving or removing hardware",
+            ),
             "TV_SERVER_CONFIGURE": (
                 self.cmd_SERVER_CONFIGURE,
                 "Send camera and detector configuration to the host service",
@@ -485,6 +499,14 @@ class ToolVision:
             )
         return all(value is not None for value in values)
 
+    def _assert_station_armed(self, station):
+        if self.require_manual_arm and station not in self.armed_stations:
+            raise ToolVisionError(
+                "%s station is not armed; manually verify its measured .cfg "
+                "coordinates and run TV_ARM %s=1"
+                % (station, "CAMERA" if station == "camera" else "SWITCH")
+            )
+
     def _axis_limits(self):
         status = self.toolhead.get_status(self.reactor.monotonic())
         minimum = status.get("axis_minimum")
@@ -533,6 +555,7 @@ class ToolVision:
     def _move_to_station(self, station):
         if not self._station_ready(station):
             raise ToolVisionError("%s station coordinates are incomplete" % station)
+        self._assert_station_armed(station)
         current = self._gcode_position()
         if station == "camera":
             x, y, z, safe_z = (
@@ -836,9 +859,12 @@ class ToolVision:
             raise ToolVisionError("MODE must be XYZ, XY, or Z")
         if mode in ("XYZ", "XY") and not self._station_ready("camera"):
             raise ToolVisionError("camera station coordinates are incomplete")
+        if mode in ("XYZ", "XY"):
+            self._assert_station_armed("camera")
         if mode in ("XYZ", "Z"):
             if self.probe_multi_axis is None or not self._station_ready("zswitch"):
                 raise ToolVisionError("Z switch configuration is incomplete")
+            self._assert_station_armed("zswitch")
 
         self.results = {}
         self.xy_reference = None
@@ -930,15 +956,104 @@ class ToolVision:
         except Exception as exc:
             server = "unavailable (%s)" % exc
         gcmd.respond_info(
-            "Tool Vision %s: busy=%s server=%s results=%d last_error=%s"
+            "Tool Vision %s: busy=%s server=%s armed=%s results=%d last_error=%s"
             % (
                 self.VERSION,
                 self.busy,
                 server,
+                ",".join(sorted(self.armed_stations)) or "none",
                 len(self.results),
                 self.last_error or "none",
             )
         )
+
+    def cmd_PREFLIGHT(self, gcmd):
+        """Report integration readiness without heating or moving any axis."""
+        eventtime = self.reactor.monotonic()
+        homed = self.toolhead.get_kinematics().get_status(eventtime)["homed_axes"]
+        tool_status = self.toolchanger.get_status(eventtime)
+        print_stats = self.printer.lookup_object("print_stats", None)
+        print_state = "unavailable"
+        if print_stats is not None:
+            print_state = str(print_stats.get_status(eventtime).get("state", ""))
+
+        service = "unavailable"
+        service_error = None
+        try:
+            health = self._api("GET", "/api/v1/health", timeout=2.0)
+            service = "ready" if health.get("configured") else "not configured"
+        except Exception as exc:
+            service_error = str(exc)
+
+        gcmd.respond_info("=== Tool Vision preflight (no motion) ===")
+        gcmd.respond_info(
+            "Tools: %s | reference: T%d | active: %s"
+            % (
+                ", ".join("T%d" % tool for tool in self._tool_numbers()),
+                self.reference_tool,
+                tool_status.get("tool", "none") or "none",
+            )
+        )
+        gcmd.respond_info(
+            "Print state: %s | homed axes: %s"
+            % (print_state or "unknown", homed or "none")
+        )
+        gcmd.respond_info(
+            "Camera station: %s | Z switch station: %s"
+            % (
+                "configured" if self._station_ready("camera") else "INCOMPLETE",
+                "configured" if self._station_ready("zswitch") else "INCOMPLETE",
+            )
+        )
+        gcmd.respond_info(
+            "Manual station arms: %s | required: %s"
+            % (
+                ", ".join(sorted(self.armed_stations)) or "none",
+                self.require_manual_arm,
+            )
+        )
+        if service_error is None:
+            gcmd.respond_info("Vision service: %s" % service)
+        else:
+            gcmd.respond_info("Vision service: unavailable (%s)" % service_error)
+        gcmd.respond_info(
+            "Preflight never proves physical clearance; verify the upward camera "
+            "view and station coordinates before any TV_MOVE_* command."
+        )
+
+    def cmd_ARM(self, gcmd):
+        camera = bool(gcmd.get_int("CAMERA", 0, minval=0, maxval=1))
+        switch = bool(gcmd.get_int("SWITCH", 0, minval=0, maxval=1))
+        if not camera and not switch:
+            raise gcmd.error("Specify CAMERA=1, SWITCH=1, or both")
+        if camera and not self._station_ready("camera"):
+            raise gcmd.error("Camera station coordinates are incomplete")
+        if switch and (
+            self.probe_multi_axis is None or not self._station_ready("zswitch")
+        ):
+            raise gcmd.error("Z switch pin or station coordinates are incomplete")
+
+        if camera:
+            self.camera_calibrated = False
+            self.camera_transform = {}
+            self.xy_reference = None
+            self.armed_stations.add("camera")
+        if switch:
+            self.z_reference = None
+            self.armed_stations.add("zswitch")
+        gcmd.respond_info(
+            "Armed for this Klipper session: %s. This confirms manual physical "
+            "inspection only; it does not prove clearance."
+            % ", ".join(sorted(self.armed_stations))
+        )
+
+    def cmd_DISARM(self, gcmd):
+        self.armed_stations.clear()
+        self.camera_calibrated = False
+        self.camera_transform = {}
+        self.xy_reference = None
+        self.z_reference = None
+        gcmd.respond_info("Tool Vision stations disarmed; motion commands are locked")
 
     def cmd_SERVER_CONFIGURE(self, gcmd):
         result = self._configure_server()
@@ -1012,6 +1127,8 @@ class ToolVision:
             "last_error": self.last_error,
             "last_run": self.last_run,
             "result_file": self.result_file,
+            "require_manual_arm": self.require_manual_arm,
+            "armed_stations": sorted(self.armed_stations),
         }
 
 

@@ -187,6 +187,8 @@ class NozzleDetector:
         roi_frame = frame[y0:y1, x0:x1]
         if roi_frame.size == 0:
             raise DetectionError("configured camera ROI is empty")
+        if min(roi_frame.shape[:2]) < 3:
+            raise DetectionError("configured camera ROI is too small")
 
         gray = cv2.cvtColor(roi_frame, cv2.COLOR_BGR2GRAY)
         gray = self._apply_gamma(gray)
@@ -227,6 +229,15 @@ class NozzleDetector:
 
     def _preprocess(self, gray):
         masks = []
+        smallest_dimension = min(gray.shape[:2])
+        largest_valid_block = (
+            smallest_dimension
+            if smallest_dimension % 2
+            else smallest_dimension - 1
+        )
+        adaptive_block_size = min(
+            self.adaptive_block_size, largest_valid_block
+        )
         dark = self.polarity in ("auto", "dark")
         light = self.polarity in ("auto", "light")
         if dark:
@@ -238,7 +249,7 @@ class NozzleDetector:
                         255,
                         cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
                         cv2.THRESH_BINARY_INV,
-                        self.adaptive_block_size,
+                        adaptive_block_size,
                         self.adaptive_c,
                     ),
                 )
@@ -256,7 +267,7 @@ class NozzleDetector:
                         255,
                         cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
                         cv2.THRESH_BINARY,
-                        self.adaptive_block_size,
+                        adaptive_block_size,
                         -self.adaptive_c,
                     ),
                 )
