@@ -6,7 +6,9 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=@USER@
-WorkingDirectory="@PROJECT_DIR@"
+# systemd path directives do not strip shell-style quotes on all supported
+# MainsailOS/systemd releases. The installer uses a space-free runtime path.
+WorkingDirectory=@PROJECT_DIR@
 Environment=PYTHONUNBUFFERED=1
 ExecStart="@PYTHON@" -m server.app --host @HOST@ --port @PORT@ --log-dir "@LOG_DIR@"
 Restart=on-failure
