@@ -36,6 +36,15 @@ class ProjectContractTests(unittest.TestCase):
         self.assertNotIn("SAVE_CONFIG", source)
         self.assertNotIn("printer.cfg", source)
 
+    def test_installer_persists_runtime_without_git_clone(self):
+        installer = (PROJECT / "install.sh").read_text(encoding="utf-8")
+        self.assertIn("printer_data/tool-vision", installer)
+        self.assertIn("RUNTIME_DIR}/klippy/extras/tool_vision.py", installer)
+        self.assertIn("RUNTIME_DIR}/server/requirements.txt", installer)
+        self.assertNotIn("git clone", installer)
+        self.assertNotIn("Axiscope", installer)
+        self.assertNotIn("kTAMV", installer)
+
     def test_camera_station_is_not_fabricated_in_example_config(self):
         config = (PROJECT / "tool_vision.cfg").read_text(encoding="utf-8")
         for key in (

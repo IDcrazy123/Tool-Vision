@@ -55,7 +55,7 @@ Tool-Vision/
 │   └── tool-vision.service.in     Installer-populated systemd template
 ├── tests/                         Host-side deterministic tests
 ├── tool_vision.cfg                Portable Klipper configuration example
-├── install.sh                     User/path-aware installer
+├── install.sh                     No-clone bootstrap and runtime installer
 └── uninstall.sh                   Service and symlink removal
 ```
 
@@ -82,7 +82,8 @@ For an existing clone, retrieve the reference trees with:
 git submodule update --init --recursive
 ```
 
-The submodules are optional when installing the Tool Vision runtime.
+The submodules are development references kept on the PC. They are never
+downloaded or copied into the printer runtime.
 
 ## Camera compatibility
 
@@ -153,29 +154,45 @@ Unlike the legacy implementation, there is no hard-coded damping constant in
 the fitted matrix. Damping and maximum step size are explicit centering safety
 parameters in the Klipper config.
 
-## Installation
+## Installation without cloning on the printer
 
-Run on the Klipper host from this directory:
+The printer does not need Git or a repository checkout. Download and run the
+bootstrap script on the Klipper host:
 
 ```bash
-chmod +x install.sh uninstall.sh
-./install.sh
+curl -fsSL \
+  https://raw.githubusercontent.com/IDcrazy123/Tool-Vision/main/install.sh \
+  -o /tmp/tool-vision-install.sh
+bash /tmp/tool-vision-install.sh
 ```
 
-The installer discovers the actual login user, home directory, project path,
-Klipper path, and virtual-environment path. Override when needed:
+The script downloads a temporary source archive, copies only the required
+runtime files into `~/printer_data/tool-vision`, and removes the temporary
+archive when it exits. Tests, documentation, Axiscope, kTAMV, and Git metadata
+are not installed on the printer. Only the editable
+`~/printer_data/config/Tool-Vision/tool_vision.cfg` is exposed in Mainsail.
+
+An extracted local source bundle can also be transferred to the Pi and run
+offline with `./install.sh`; the persisted runtime is the same and the source
+bundle can be removed afterward.
+
+The installer discovers the actual login user, home directory, Klipper path,
+and virtual-environment path. Override when needed:
 
 ```bash
 KLIPPER_DIR=/opt/klipper \
+TOOL_VISION_RUNTIME_DIR=/opt/tool-vision \
+TOOL_VISION_CONFIG_DIR=/opt/printer_data/config \
 TOOL_VISION_VENV=/opt/tool-vision-env \
 TOOL_VISION_HOST=127.0.0.1 \
 TOOL_VISION_PORT=8085 \
 ./install.sh
 ```
 
-It installs an isolated venv, links the Klipper extension, generates a systemd
-unit from the real paths, replaces the legacy `tool_vision.service`, and
-restarts Klipper. It does **not** edit `printer.cfg`.
+It installs an isolated venv, links the Klipper extension to the persisted
+runtime, generates a systemd unit from the real paths, replaces the legacy
+`tool_vision.service`, and restarts Klipper. Existing `tool_vision.cfg` values
+are preserved and `printer.cfg` is never edited automatically.
 
 ## Required hardware configuration
 
