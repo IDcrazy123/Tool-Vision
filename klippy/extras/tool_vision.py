@@ -133,6 +133,7 @@ class ToolVision:
 
         self.reference_tool = config.getint("reference_tool", 0, minval=0)
         self.tool_select_command = config.get("tool_select_command", "T{tool}")
+        self._config_error = config.error
         configured_tools = config.get("tool_numbers", "").strip()
         self.configured_tool_numbers = None
         if configured_tools:
@@ -274,15 +275,10 @@ class ToolVision:
             and self.camera_roi_y_min < self.camera_roi_y_max
         ):
             raise config.error("camera ROI minimums must be below maximums")
-        tool_numbers = self._tool_numbers()
-        if not tool_numbers:
-            raise config.error("tool_numbers cannot be empty")
-        if any(tool < 0 for tool in tool_numbers):
-            raise config.error("tool_numbers cannot contain negative values")
-        if len(tool_numbers) != len(set(tool_numbers)):
-            raise config.error("tool_numbers cannot contain duplicates")
-        if self.reference_tool not in tool_numbers:
-            raise config.error("reference_tool is not present in tool_numbers")
+        if self.configured_tool_numbers is not None:
+            self._validate_tool_numbers(
+                config.error, self.configured_tool_numbers
+            )
         if (
             self.camera_z is not None
             and self.camera_safe_z is not None
@@ -302,8 +298,22 @@ class ToolVision:
                 "camera_center_tolerance cannot exceed max correction"
             )
 
+    def _validate_tool_numbers(self, error, tool_numbers):
+        tool_numbers = list(tool_numbers)
+        if not tool_numbers:
+            raise error("tool_numbers cannot be empty")
+        if any(tool < 0 for tool in tool_numbers):
+            raise error("tool_numbers cannot contain negative values")
+        if len(tool_numbers) != len(set(tool_numbers)):
+            raise error("tool_numbers cannot contain duplicates")
+        if self.reference_tool not in tool_numbers:
+            raise error("reference_tool is not present in tool_numbers")
+
     def _handle_connect(self):
         self.toolhead = self.printer.lookup_object("toolhead")
+        # KTC populates dynamic tool_numbers during connect, after config
+        # objects are constructed. Explicit lists are validated earlier too.
+        self._validate_tool_numbers(self._config_error, self._tool_numbers())
         self.gcode.respond_info(
             "Tool Vision %s loaded in report-only mode" % self.VERSION
         )

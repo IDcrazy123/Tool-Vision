@@ -12,6 +12,7 @@ class FakeConfig:
 class ConfigurationSafetyTests(unittest.TestCase):
     @staticmethod
     def _instance(tool_numbers=None):
+        numbers = [0, 1] if tool_numbers is None else list(tool_numbers)
         vision = object.__new__(ToolVision)
         vision.camera_rotation = 0
         vision.camera_mode = "auto"
@@ -31,7 +32,8 @@ class ConfigurationSafetyTests(unittest.TestCase):
         vision.zswitch_safe_z = 15.0
         vision.camera_center_tolerance = 0.01
         vision.camera_center_max_correction = 2.0
-        vision._tool_numbers = lambda: list(tool_numbers or [0, 1])
+        vision.configured_tool_numbers = numbers
+        vision._tool_numbers = lambda: list(numbers)
         return vision
 
     def test_valid_portable_configuration_passes_safety_validation(self):
@@ -47,6 +49,17 @@ class ConfigurationSafetyTests(unittest.TestCase):
         vision = self._instance([0, 1, 1])
         with self.assertRaises(ValueError):
             vision._validate_config(FakeConfig())
+
+    def test_dynamic_tool_discovery_is_deferred_until_connect(self):
+        vision = self._instance()
+        vision.configured_tool_numbers = None
+        vision._tool_numbers = lambda: []
+        vision._validate_config(FakeConfig())
+
+    def test_empty_discovered_tool_list_is_rejected_after_connect(self):
+        vision = self._instance()
+        with self.assertRaises(ValueError):
+            vision._validate_tool_numbers(FakeConfig.error, [])
 
 
 class SafeStationMotionTests(unittest.TestCase):

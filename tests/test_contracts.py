@@ -45,6 +45,13 @@ class ProjectContractTests(unittest.TestCase):
         self.assertNotIn("Axiscope", installer)
         self.assertNotIn("kTAMV", installer)
 
+    def test_systemd_working_directory_is_not_shell_quoted(self):
+        unit = (
+            PROJECT / "server" / "tool-vision.service.in"
+        ).read_text(encoding="utf-8")
+        self.assertIn("WorkingDirectory=@PROJECT_DIR@", unit)
+        self.assertNotIn('WorkingDirectory="@PROJECT_DIR@"', unit)
+
     def test_camera_station_is_not_fabricated_in_example_config(self):
         config = (PROJECT / "tool_vision.cfg").read_text(encoding="utf-8")
         for key in (
