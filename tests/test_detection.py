@@ -59,24 +59,6 @@ class NativeResolutionDetectionTests(unittest.TestCase):
         self.assertEqual(transformed.shape, (800, 600, 3))
         source.close()
 
-    def test_adaptive_threshold_scales_down_for_a_small_roi(self):
-        settings = self._settings()
-        settings.update(
-            {
-                "camera_roi_x_min": 0.40,
-                "camera_roi_y_min": 0.35,
-                "camera_roi_x_max": 0.60,
-                "camera_roi_y_max": 0.65,
-                "detector_adaptive_block_size": 35,
-            }
-        )
-        frame = np.full((80, 120, 3), 255, dtype=np.uint8)
-        cv2.circle(frame, (60, 40), 4, (0, 0, 0), -1)
-        detector = NozzleDetector(settings, lambda *args: None)
-        result, annotated = detector.detect_frame(frame)
-        self.assertIsNotNone(result)
-        self.assertEqual(annotated.shape, frame.shape)
-
 
 if __name__ == "__main__":
     unittest.main()

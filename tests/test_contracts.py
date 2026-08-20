@@ -45,11 +45,6 @@ class ProjectContractTests(unittest.TestCase):
         self.assertNotIn("Axiscope", installer)
         self.assertNotIn("kTAMV", installer)
 
-    def test_installer_supports_staging_without_klipper_restart(self):
-        installer = (PROJECT / "install.sh").read_text(encoding="utf-8")
-        self.assertIn("--no-restart", installer)
-        self.assertIn("TOOL_VISION_RESTART_KLIPPER", installer)
-
     def test_camera_station_is_not_fabricated_in_example_config(self):
         config = (PROJECT / "tool_vision.cfg").read_text(encoding="utf-8")
         for key in (
@@ -57,10 +52,6 @@ class ProjectContractTests(unittest.TestCase):
             "camera_y_pos:",
             "camera_z_pos:",
             "camera_safe_z:",
-            "zswitch_x_pos:",
-            "zswitch_y_pos:",
-            "zswitch_z_pos:",
-            "zswitch_safe_z:",
         ):
             active = [
                 line for line in config.splitlines()

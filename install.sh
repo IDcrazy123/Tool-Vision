@@ -6,19 +6,6 @@ SOURCE_DIR="${TOOL_VISION_SOURCE_DIR:-${SCRIPT_DIR}}"
 ARCHIVE_URL="${TOOL_VISION_ARCHIVE_URL:-https://github.com/IDcrazy123/Tool-Vision/archive/refs/heads/main.tar.gz}"
 BOOTSTRAP_DIR=""
 TEMP_UNIT=""
-RESTART_KLIPPER="${TOOL_VISION_RESTART_KLIPPER:-1}"
-
-for argument in "$@"; do
-    case "${argument}" in
-        --no-restart) RESTART_KLIPPER=0 ;;
-        *) echo "ERROR: Unknown argument: ${argument}" >&2; exit 2 ;;
-    esac
-done
-
-if [[ "${RESTART_KLIPPER}" != "0" && "${RESTART_KLIPPER}" != "1" ]]; then
-    echo "ERROR: TOOL_VISION_RESTART_KLIPPER must be 0 or 1." >&2
-    exit 2
-fi
 
 cleanup() {
     if [[ -n "${TEMP_UNIT}" && -f "${TEMP_UNIT}" ]]; then
@@ -197,15 +184,10 @@ if systemctl list-unit-files tool_vision.service >/dev/null 2>&1; then
     sudo rm -f -- /etc/systemd/system/tool_vision.service
 fi
 
-echo "[6/6] Starting Tool Vision..."
+echo "[6/6] Starting Tool Vision and restarting Klipper..."
 sudo systemctl daemon-reload
 sudo systemctl enable --now "${SERVICE_NAME}"
-if [[ "${RESTART_KLIPPER}" == "1" ]]; then
-    echo "  Restarting Klipper to load the installed extension."
-    sudo systemctl restart klipper
-else
-    echo "  Klipper restart skipped (--no-restart)."
-fi
+sudo systemctl restart klipper
 
 echo
 echo "Installation complete. No Git repository was created on the printer."
