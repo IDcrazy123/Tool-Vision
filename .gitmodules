@@ -1,0 +1,6 @@
+[submodule "Axiscope"]
+	path = Axiscope
+	url = https://github.com/nic335/Axiscope.git
+[submodule "kTAMV"]
+	path = kTAMV
+	url = https://github.com/TypQxQ/kTAMV.git
