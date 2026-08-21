@@ -1,81 +1,114 @@
-import logging
-import tempfile
+import time
 import unittest
 from unittest import mock
 
+import cv2
+import numpy as np
+
 from server.app import ServiceState, create_app
-from server.detection import DetectionError
+from server.detection import DetectionError, NozzleDetector
 
 
-class ApiContractTests(unittest.TestCase):
+def frame():
+    image = np.full((480, 640, 3), 220, dtype=np.uint8)
+    cv2.circle(image, (320, 240), 22, (20, 20, 20), -1)
+    return image
+
+
+class FakeCamera:
+    def __init__(self):
+        self.closed = False
+
+    def capture(self):
+        return frame()
+
+    def close(self):
+        self.closed = True
+
+
+class ApiTests(unittest.TestCase):
     def setUp(self):
-        self.temp_directory = tempfile.TemporaryDirectory()
-        self.app = create_app(self.temp_directory.name)
+        self.app = create_app()
         self.app.testing = True
         self.client = self.app.test_client()
+        self.old_interval = NozzleDetector.FRAME_INTERVAL
+        NozzleDetector.FRAME_INTERVAL = 0
 
     def tearDown(self):
-        state = self.app.config["TOOL_VISION_STATE"]
-        state.executor.shutdown(wait=False, cancel_futures=True)
-        for handler in list(state.log.handlers):
-            handler.close()
-            state.log.removeHandler(handler)
-        self.temp_directory.cleanup()
+        NozzleDetector.FRAME_INTERVAL = self.old_interval
+        self.app.config["TOOL_VISION_STATE"].close()
 
-    def test_health_reports_unconfigured_native_camera_state(self):
-        response = self.client.get("/api/v1/health")
+    def test_health_is_versioned_and_unconfigured(self):
+        response = self.client.get("/api/v2/health")
         self.assertEqual(response.status_code, 200)
         payload = response.get_json()
-        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["version"], "3.0.0")
         self.assertFalse(payload["configured"])
-        self.assertIsNone(payload["camera_frame"])
+        self.assertFalse(payload["transform"]["calibrated"])
 
-    def test_model_fit_and_offset_round_trip(self):
-        samples = [
-            {"pixel_delta": [20, 0], "machine_delta": [0.2, 0]},
-            {"pixel_delta": [-20, 0], "machine_delta": [-0.2, 0]},
-            {"pixel_delta": [0, 20], "machine_delta": [0, 0.2]},
-            {"pixel_delta": [0, -20], "machine_delta": [0, -0.2]},
+    @mock.patch("server.app.resolve_camera")
+    @mock.patch("server.app.CameraSource")
+    def test_configure_learn_and_preview_work_as_one_serial_job(self, source, resolver):
+        resolver.return_value = {
+            "name": "nozzle",
+            "location": "tool",
+            "source": "unused",
+            "rotation": 0,
+            "discovered": True,
+        }
+        source.return_value = FakeCamera()
+        configured = self.client.post("/api/v2/config", json={})
+        self.assertEqual(configured.status_code, 200)
+        started = self.client.post("/api/v2/jobs/learn", json={})
+        self.assertEqual(started.status_code, 202)
+        job_id = started.get_json()["id"]
+        deadline = time.monotonic() + 2
+        job = None
+        while time.monotonic() < deadline:
+            job = self.client.get("/api/v2/jobs/%s" % job_id).get_json()
+            if job["status"] in ("complete", "error"):
+                break
+            time.sleep(0.01)
+        self.assertEqual(job["status"], "complete", job)
+        self.assertEqual(job["result"]["profile"]["frame_width"], 640)
+        self.assertEqual(self.client.get("/api/v2/frame").status_code, 200)
+
+    def test_transform_round_trip(self):
+        moves = [
+            [0, -0.5], [0.294, -0.405], [0.476, -0.155], [0.476, 0.155],
+            [0.294, 0.405], [0, 0.5], [-0.294, 0.405], [-0.476, 0.155],
+            [-0.476, -0.155], [-0.294, -0.405],
         ]
-        fit = self.client.post(
-            "/api/v1/model",
-            json={
-                "model": "affine",
-                "samples": samples,
-                "target": [512, 384],
-                "frame_width": 1024,
-                "frame_height": 768,
-                "max_rms_error": 0.001,
-            },
+        samples = [
+            {"pixel_delta": [x * 100, y * 100], "machine_delta": [x, y]}
+            for x, y in moves
+        ]
+        fitted = self.client.post(
+            "/api/v2/transform/fit",
+            json={"samples": samples, "frame_width": 640, "frame_height": 480},
         )
-        self.assertEqual(fit.status_code, 200)
-        self.assertTrue(fit.get_json()["transform"]["calibrated"])
-
-        offset = self.client.post(
-            "/api/v1/offset",
-            json={"point": [502, 379], "frame_width": 1024, "frame_height": 768},
-        )
-        self.assertEqual(offset.status_code, 200)
-        correction = offset.get_json()["correction"]
+        self.assertEqual(fitted.status_code, 200, fitted.get_json())
+        correction = self.client.post(
+            "/api/v2/transform/correction",
+            json={"point": [310, 235], "frame_width": 640, "frame_height": 480},
+        ).get_json()["correction"]
         self.assertAlmostEqual(correction["move_x"], 0.1)
         self.assertAlmostEqual(correction["move_y"], 0.05)
 
-    def test_missing_job_and_frame_return_not_found(self):
-        self.assertEqual(self.client.get("/api/v1/jobs/missing").status_code, 404)
-        self.assertEqual(self.client.get("/api/v1/frame").status_code, 404)
+    def test_missing_job_and_route_remain_404(self):
+        self.assertEqual(self.client.get("/api/v2/jobs/missing").status_code, 404)
+        self.assertEqual(self.client.get("/missing").status_code, 404)
 
 
 class ServiceConcurrencyTests(unittest.TestCase):
-    def test_reconfigure_is_rejected_while_detection_is_active(self):
-        state = ServiceState(logging.getLogger("tool_vision_test"))
-        state.active_job = "running-job"
+    def test_reconfigure_is_rejected_while_job_is_active(self):
+        state = ServiceState()
+        state.active_job = "running"
         try:
-            with mock.patch("server.app.CameraSource") as camera_class:
-                with self.assertRaises(DetectionError):
-                    state.configure({"camera_source": "unused"})
-                camera_class.assert_not_called()
+            with self.assertRaises(DetectionError):
+                state.configure({"camera_source": "unused"})
         finally:
-            state.executor.shutdown(wait=False, cancel_futures=True)
+            state.close()
 
 
 if __name__ == "__main__":

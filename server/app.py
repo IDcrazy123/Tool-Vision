@@ -1,249 +1,280 @@
-"""Versioned HTTP API for Tool Vision."""
+"""ToolVision host service.
+
+OpenCV/NumPy work runs here instead of in Klipper. The API uses short requests
+plus a single-worker job queue so Klipper can poll without blocking its reactor
+for an entire camera-detection timeout.
+"""
 
 import argparse
 import logging
-from logging.handlers import RotatingFileHandler
 import os
 import threading
 import time
 import uuid
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 
 import cv2
 from flask import Flask, Response, jsonify, request
-from waitress import serve
+from werkzeug.exceptions import HTTPException
 
-from . import __version__
-from .camera import CameraError, CameraSource
-from .detection import DetectionError, NozzleDetector
-from .transform import TransformError, TransformModel
-
+try:
+    from . import __version__ as VERSION
+    from .camera import CameraError, CameraSource, resolve_camera
+    from .detection import DetectionError, NozzleDetector
+    from .transform import TransformError, TransformModel
+except ImportError:  # pragma: no cover - direct script execution
+    VERSION = "3.0.0"
+    from camera import CameraError, CameraSource, resolve_camera
+    from detection import DetectionError, NozzleDetector
+    from transform import TransformError, TransformModel
 
 class ServiceState:
-    def __init__(self, logger):
-        self.log = logger
+    """Thread-safe ownership of one camera and one serial detection queue."""
+
+    def __init__(self, logger=None):
+        self.log = logger or logging.getLogger("tool_vision")
         self.lock = threading.RLock()
+        self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="vision")
         self.camera = None
+        self.camera_descriptor = None
         self.detector = None
+        self.transform = TransformModel()
         self.settings = {}
-        self.model = TransformModel()
-        self.jobs = {}
+        self.jobs = OrderedDict()
         self.active_job = None
-        self.executor = ThreadPoolExecutor(max_workers=1)
         self.latest_jpeg = None
-        self.latest_observation = None
+
+    def close(self):
+        with self.lock:
+            if self.camera is not None:
+                self.camera.close()
+            self.camera = None
+        self.executor.shutdown(wait=False, cancel_futures=True)
 
     def configure(self, settings):
+        if not isinstance(settings, dict):
+            raise CameraError("configuration body must be an object")
         with self.lock:
             if self.active_job is not None:
-                raise DetectionError(
-                    "cannot reconfigure while a detection job is running"
-                )
+                raise DetectionError("camera is busy with job %s" % self.active_job)
 
-        camera = CameraSource(settings, self.log)
+        descriptor = resolve_camera(settings)
+        candidate = CameraSource(
+            descriptor,
+            timeout=float(settings.get("read_timeout", 5.0)),
+        )
         try:
-            detector = NozzleDetector(settings, self.log)
+            frame = candidate.capture()
         except Exception:
-            camera.close()
+            candidate.close()
             raise
+        profile = settings.get("profile")
+        transform = settings.get("transform")
+        detector = NozzleDetector(profile) if profile else NozzleDetector()
+        model = TransformModel(transform) if transform else TransformModel()
 
         with self.lock:
-            if self.active_job is not None:
-                old_camera = None
-                rejected = True
-            else:
-                old_camera = self.camera
-                self.camera = camera
-                self.detector = detector
-                self.settings = dict(settings)
-                self.model.clear()
-                self.latest_jpeg = None
-                self.latest_observation = None
-                rejected = False
+            previous = self.camera
+            self.camera = candidate
+            self.camera_descriptor = descriptor
+            self.detector = detector
+            self.transform = model
+            self.settings = dict(settings)
+            self._store_frame(frame)
+            if previous is not None:
+                previous.close()
+        return self.health()
 
-        if rejected:
-            camera.close()
-            raise DetectionError(
-                "cannot reconfigure while a detection job is running"
-            )
-        if old_camera is not None:
-            old_camera.close()
-
-    def start_detection(self):
+    def start_job(self, kind):
+        if kind not in ("learn", "detect"):
+            raise DetectionError("unknown job type '%s'" % kind)
         with self.lock:
             if self.camera is None or self.detector is None:
-                raise DetectionError("vision server is not configured")
+                raise DetectionError("camera service has not been configured")
             if self.active_job is not None:
-                raise DetectionError("another detection job is already running")
+                raise DetectionError("camera is busy with job %s" % self.active_job)
+            if kind == "detect" and self.detector.profile is None:
+                raise DetectionError("camera detector has not been taught")
             job_id = uuid.uuid4().hex
             self.jobs[job_id] = {
-                "job_id": job_id,
-                "state": "queued",
+                "id": job_id,
+                "kind": kind,
+                "status": "queued",
                 "created": time.time(),
-                "result": None,
-                "error": None,
             }
             self.active_job = job_id
             self._trim_jobs()
-            self.executor.submit(self._run_detection, job_id)
+            self.executor.submit(self._run_job, job_id, kind)
             return dict(self.jobs[job_id])
 
-    def _run_detection(self, job_id):
+    def get_job(self, job_id):
         with self.lock:
-            self.jobs[job_id]["state"] = "running"
+            job = self.jobs.get(job_id)
+            return dict(job) if job else None
+
+    def fit_transform(self, payload):
+        with self.lock:
+            if self.active_job is not None:
+                raise TransformError("camera is busy with job %s" % self.active_job)
+            transform = self.transform.fit(payload)
+            return {"transform": transform}
+
+    def correction(self, payload):
+        with self.lock:
+            return {"correction": self.transform.correction(payload)}
+
+    def clear_transform(self):
+        with self.lock:
+            self.transform.clear()
+        return {"ok": True}
+
+    def health(self):
+        with self.lock:
+            descriptor = None
+            if self.camera_descriptor is not None:
+                descriptor = {
+                    key: self.camera_descriptor.get(key)
+                    for key in ("name", "location", "discovered", "uid", "rotation")
+                    if key in self.camera_descriptor
+                }
+            profile = dict(self.detector.profile) if self.detector and self.detector.profile else None
+            return {
+                "ok": True,
+                "version": VERSION,
+                "configured": self.camera is not None,
+                "camera": descriptor,
+                "profile": profile,
+                "transform": self.transform.status(),
+                "active_job": self.active_job,
+                "has_preview": self.latest_jpeg is not None,
+            }
+
+    def _run_job(self, job_id, kind):
+        with self.lock:
+            self.jobs[job_id]["status"] = "running"
             self.jobs[job_id]["started"] = time.time()
             camera = self.camera
             detector = self.detector
         try:
-            result = detector.detect_stable(camera, self._store_frame)
+            if kind == "learn":
+                result = detector.learn(camera, frame_callback=self._store_frame)
+            else:
+                result = {"observation": detector.detect_stable(
+                    camera, frame_callback=self._store_frame
+                )}
             with self.lock:
-                self.latest_observation = result
-                self.jobs[job_id]["state"] = "complete"
-                self.jobs[job_id]["result"] = result
+                self.jobs[job_id].update(
+                    {"status": "complete", "result": result, "finished": time.time()}
+                )
         except Exception as exc:
-            self.log.exception("detection job %s failed", job_id)
+            self.log.exception("camera job %s failed", job_id)
             with self.lock:
-                self.jobs[job_id]["state"] = "error"
-                self.jobs[job_id]["error"] = str(exc)
+                self.jobs[job_id].update(
+                    {"status": "error", "error": str(exc), "finished": time.time()}
+                )
         finally:
             with self.lock:
-                self.jobs[job_id]["finished"] = time.time()
-                self.active_job = None
+                if self.active_job == job_id:
+                    self.active_job = None
 
     def _store_frame(self, frame):
-        ok, encoded = cv2.imencode(".jpg", frame)
+        ok, encoded = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 88])
         if ok:
             with self.lock:
                 self.latest_jpeg = encoded.tobytes()
 
     def _trim_jobs(self):
-        if len(self.jobs) <= 50:
-            return
-        finished = [
-            item
-            for item in self.jobs.values()
-            if item["state"] in ("complete", "error")
-        ]
-        for item in sorted(finished, key=lambda entry: entry["created"])[:10]:
-            self.jobs.pop(item["job_id"], None)
-
-    def health(self):
-        with self.lock:
-            frame = None
-            if self.latest_observation:
-                frame = {
-                    "width": self.latest_observation["frame_width"],
-                    "height": self.latest_observation["frame_height"],
-                }
-            return {
-                "version": __version__,
-                "configured": self.camera is not None,
-                "busy": self.active_job is not None,
-                "camera_frame": frame,
-                "transform": self.model.status(),
-            }
+        while len(self.jobs) > 40:
+            key, job = next(iter(self.jobs.items()))
+            if key == self.active_job or job.get("status") in ("queued", "running"):
+                break
+            self.jobs.popitem(last=False)
 
 
 def create_app(log_directory=None):
     app = Flask(__name__)
     logger = logging.getLogger("tool_vision")
-    logger.setLevel(logging.INFO)
-    if not logger.handlers:
-        log_directory = log_directory or os.environ.get(
-            "TOOL_VISION_LOG_DIR", os.path.join(os.getcwd(), "logs")
-        )
+    if log_directory:
         os.makedirs(log_directory, exist_ok=True)
-        handler = RotatingFileHandler(
-            os.path.join(log_directory, "tool_vision.log"),
-            maxBytes=2 * 1024 * 1024,
-            backupCount=3,
-            encoding="utf-8",
-        )
-        handler.setFormatter(
-            logging.Formatter("%(asctime)s %(levelname)s %(message)s")
-        )
-        logger.addHandler(handler)
-        logger.addHandler(logging.StreamHandler())
-
+        if not any(isinstance(handler, logging.FileHandler) for handler in logger.handlers):
+            handler = logging.FileHandler(
+                os.path.join(log_directory, "tool-vision.log"), encoding="utf-8"
+            )
+            handler.setFormatter(
+                logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+            )
+            logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
     state = ServiceState(logger)
     app.config["TOOL_VISION_STATE"] = state
 
-    def json_body():
+    def body():
         payload = request.get_json(silent=True)
         if not isinstance(payload, dict):
-            raise ValueError("request body must be a JSON object")
+            raise DetectionError("request body must be a JSON object")
         return payload
 
-    def error_response(exc, status=400):
-        return jsonify({"ok": False, "error": str(exc)}), status
+    @app.errorhandler(CameraError)
+    @app.errorhandler(DetectionError)
+    @app.errorhandler(TransformError)
+    def expected_error(exc):
+        return jsonify({"ok": False, "error": str(exc)}), 400
 
-    @app.get("/api/v1/health")
+    @app.errorhandler(Exception)
+    def unexpected_error(exc):
+        if isinstance(exc, HTTPException):
+            return exc
+        logger.exception("unhandled API error")
+        return jsonify({"ok": False, "error": "internal service error"}), 500
+
+    @app.get("/api/v2/health")
     def health():
-        return jsonify({"ok": True, **state.health()})
+        return jsonify(state.health())
 
-    @app.post("/api/v1/config")
+    @app.post("/api/v2/config")
     def configure():
-        try:
-            state.configure(json_body())
-            return jsonify({"ok": True, **state.health()})
-        except (TypeError, ValueError, CameraError, DetectionError) as exc:
-            return error_response(exc)
+        return jsonify(state.configure(body()))
 
-    @app.post("/api/v1/jobs/detect")
-    def start_detection():
-        try:
-            return jsonify({"ok": True, "job": state.start_detection()}), 202
-        except DetectionError as exc:
-            return error_response(exc, 409)
+    @app.post("/api/v2/jobs/<kind>")
+    def start_job(kind):
+        return jsonify(state.start_job(kind)), 202
 
-    @app.get("/api/v1/jobs/<job_id>")
+    @app.get("/api/v2/jobs/<job_id>")
     def get_job(job_id):
+        job = state.get_job(job_id)
+        if job is None:
+            return jsonify({"ok": False, "error": "job not found"}), 404
+        return jsonify(job)
+
+    @app.post("/api/v2/transform/fit")
+    def fit_transform():
+        return jsonify(state.fit_transform(body()))
+
+    @app.post("/api/v2/transform/correction")
+    def correction():
+        return jsonify(state.correction(body()))
+
+    @app.delete("/api/v2/transform")
+    def clear_transform():
+        return jsonify(state.clear_transform())
+
+    @app.get("/api/v2/frame")
+    def frame():
         with state.lock:
-            job = state.jobs.get(job_id)
-            if job is None:
-                return error_response("unknown detection job", 404)
-            return jsonify({"ok": True, "job": dict(job)})
-
-    @app.post("/api/v1/model")
-    def fit_model():
-        try:
-            with state.lock:
-                result = state.model.fit(json_body())
-            return jsonify({"ok": True, "transform": result})
-        except (TypeError, ValueError, TransformError) as exc:
-            return error_response(exc)
-
-    @app.delete("/api/v1/model")
-    def clear_model():
-        with state.lock:
-            state.model.clear()
-        return jsonify({"ok": True})
-
-    @app.post("/api/v1/offset")
-    def calculate_offset():
-        try:
-            with state.lock:
-                result = state.model.correction(json_body())
-            return jsonify({"ok": True, "correction": result})
-        except (TypeError, ValueError, TransformError) as exc:
-            return error_response(exc)
-
-    @app.get("/api/v1/frame")
-    def latest_frame():
-        with state.lock:
-            frame = state.latest_jpeg
-        if frame is None:
-            return error_response("no processed frame is available", 404)
-        return Response(frame, mimetype="image/jpeg")
+            jpeg = state.latest_jpeg
+        if jpeg is None:
+            return jsonify({"ok": False, "error": "no frame captured"}), 404
+        return Response(jpeg, mimetype="image/jpeg")
 
     @app.get("/")
     def index():
         return jsonify(
             {
-                "name": "Tool Vision",
-                "version": __version__,
-                "health": "/api/v1/health",
-                "latest_frame": "/api/v1/frame",
+                "name": "ToolVision host service",
+                "version": VERSION,
+                "health": "/api/v2/health",
+                "preview": "/api/v2/frame",
             }
         )
 
@@ -251,12 +282,15 @@ def create_app(log_directory=None):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Tool Vision host service")
+    parser = argparse.ArgumentParser(description="ToolVision camera service")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8085)
-    parser.add_argument("--log-dir", default=None)
+    parser.add_argument("--log-directory", default=None)
     args = parser.parse_args()
-    serve(create_app(args.log_dir), host=args.host, port=args.port, threads=4)
+    logging.basicConfig(level=logging.INFO)
+    from waitress import serve
+
+    serve(create_app(args.log_directory), host=args.host, port=args.port, threads=4)
 
 
 if __name__ == "__main__":

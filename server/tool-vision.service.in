@@ -10,7 +10,7 @@ User=@USER@
 # MainsailOS/systemd releases. The installer uses a space-free runtime path.
 WorkingDirectory=@PROJECT_DIR@
 Environment=PYTHONUNBUFFERED=1
-ExecStart="@PYTHON@" -m server.app --host @HOST@ --port @PORT@ --log-dir "@LOG_DIR@"
+ExecStart="@PYTHON@" -m server.app --host @HOST@ --port @PORT@ --log-directory "@LOG_DIR@"
 Restart=on-failure
 RestartSec=3
 TimeoutStopSec=10

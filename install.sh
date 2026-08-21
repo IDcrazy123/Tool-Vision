@@ -94,12 +94,12 @@ CONFIG_TARGET="${CONFIG_DIR}/Tool-Vision/tool_vision.cfg"
 VENV_DIR="${TOOL_VISION_VENV:-${USER_HOME}/tool-vision-env}"
 SERVICE_NAME="tool-vision.service"
 SERVICE_TARGET="/etc/systemd/system/${SERVICE_NAME}"
-KLIPPER_TARGET="${KLIPPER_DIR}/klippy/extras/tool_vision.py"
+KLIPPER_EXTRAS="${KLIPPER_DIR}/klippy/extras"
 LISTEN_HOST="${TOOL_VISION_HOST:-127.0.0.1}"
 LISTEN_PORT="${TOOL_VISION_PORT:-8085}"
 LOG_DIR="${TOOL_VISION_LOG_DIR:-${USER_HOME}/printer_data/logs/tool-vision}"
 
-echo "Tool Vision 2 installer"
+echo "ToolVision 3 installer"
 echo "  Source  : ${SOURCE_DIR}"
 echo "  Runtime : ${RUNTIME_DIR}"
 echo "  Config  : ${CONFIG_TARGET}"
@@ -108,6 +108,9 @@ echo "  Klipper : ${KLIPPER_DIR}"
 echo "  Venv    : ${VENV_DIR}"
 
 require_file "${SOURCE_DIR}/klippy/extras/tool_vision.py"
+require_file "${SOURCE_DIR}/klippy/extras/tool_vision_client.py"
+require_file "${SOURCE_DIR}/klippy/extras/tool_vision_state.py"
+require_file "${SOURCE_DIR}/klippy/extras/tool_vision_toolchanger.py"
 require_file "${SOURCE_DIR}/server/__init__.py"
 require_file "${SOURCE_DIR}/server/app.py"
 require_file "${SOURCE_DIR}/server/camera.py"
@@ -118,9 +121,15 @@ require_file "${SOURCE_DIR}/server/transform.py"
 require_file "${SOURCE_DIR}/tool_vision.cfg"
 require_file "${SOURCE_DIR}/install.sh"
 require_file "${SOURCE_DIR}/uninstall.sh"
-if [[ ! -d "${KLIPPER_DIR}/klippy/extras" ]]; then
+if [[ ! -d "${KLIPPER_EXTRAS}" ]]; then
     echo "ERROR: Klipper extras directory not found under ${KLIPPER_DIR}" >&2
     echo "Set KLIPPER_DIR=/actual/path and run this installer again." >&2
+    exit 1
+fi
+if [[ ! -f "${KLIPPER_EXTRAS}/tools_calibrate.py" ]]; then
+    echo "ERROR: tools_calibrate.py from klipper-toolchanger is required." >&2
+    echo "Install/update https://github.com/viesturz/klipper-toolchanger first." >&2
+    echo "The [tools_calibrate] cfg section itself must remain disabled." >&2
     exit 1
 fi
 if ! command -v python3 >/dev/null 2>&1; then
@@ -132,8 +141,11 @@ echo "[1/6] Persisting the minimal runtime on the printer..."
 install_runtime_file "${SOURCE_DIR}/install.sh" "${RUNTIME_DIR}/install.sh" 0755
 install_runtime_file "${SOURCE_DIR}/uninstall.sh" "${RUNTIME_DIR}/uninstall.sh" 0755
 install_runtime_file "${SOURCE_DIR}/tool_vision.cfg" "${RUNTIME_DIR}/tool_vision.cfg"
-install_runtime_file "${SOURCE_DIR}/klippy/extras/tool_vision.py" \
-    "${RUNTIME_DIR}/klippy/extras/tool_vision.py"
+for klipper_file in tool_vision.py tool_vision_client.py tool_vision_state.py \
+    tool_vision_toolchanger.py; do
+    install_runtime_file "${SOURCE_DIR}/klippy/extras/${klipper_file}" \
+        "${RUNTIME_DIR}/klippy/extras/${klipper_file}"
+done
 for server_file in __init__.py app.py camera.py detection.py requirements.txt \
     tool-vision.service.in transform.py; do
     install_runtime_file "${SOURCE_DIR}/server/${server_file}" \
@@ -144,6 +156,12 @@ sudo -u "${INSTALL_USER}" mkdir -p -- "$(dirname -- "${CONFIG_TARGET}")"
 if [[ ! -e "${CONFIG_TARGET}" ]]; then
     install_runtime_file "${RUNTIME_DIR}/tool_vision.cfg" "${CONFIG_TARGET}"
     echo "  Created the editable config at ${CONFIG_TARGET}"
+elif grep -Eq '^# Tool( )?Vision 2' "${CONFIG_TARGET}"; then
+    CONFIG_BACKUP="${CONFIG_TARGET}.pre-v3-$(date +%Y%m%d-%H%M%S)"
+    sudo -u "${INSTALL_USER}" cp -a -- "${CONFIG_TARGET}" "${CONFIG_BACKUP}"
+    sudo -u "${INSTALL_USER}" install -m 0644 \
+        "${RUNTIME_DIR}/tool_vision.cfg" "${CONFIG_TARGET}"
+    echo "  Migrated generated v2 config; backup: ${CONFIG_BACKUP}"
 else
     echo "  Preserved the existing editable config at ${CONFIG_TARGET}"
 fi
@@ -156,14 +174,18 @@ sudo -u "${INSTALL_USER}" "${VENV_DIR}/bin/python" -m pip install --upgrade pip
 sudo -u "${INSTALL_USER}" "${VENV_DIR}/bin/python" -m pip install \
     -r "${RUNTIME_DIR}/server/requirements.txt"
 
-echo "[3/6] Linking the persisted Klipper extension..."
-if [[ -e "${KLIPPER_TARGET}" && ! -L "${KLIPPER_TARGET}" ]]; then
-    BACKUP_TARGET="${KLIPPER_TARGET}.pre-tool-vision-$(date +%Y%m%d-%H%M%S)"
-    sudo -u "${INSTALL_USER}" cp -a -- "${KLIPPER_TARGET}" "${BACKUP_TARGET}"
-    echo "  Preserved existing regular file as ${BACKUP_TARGET}"
-fi
-sudo -u "${INSTALL_USER}" ln -sfn -- \
-    "${RUNTIME_DIR}/klippy/extras/tool_vision.py" "${KLIPPER_TARGET}"
+echo "[3/6] Linking the persisted Klipper extension modules..."
+for klipper_file in tool_vision.py tool_vision_client.py tool_vision_state.py \
+    tool_vision_toolchanger.py; do
+    KLIPPER_TARGET="${KLIPPER_EXTRAS}/${klipper_file}"
+    if [[ -e "${KLIPPER_TARGET}" && ! -L "${KLIPPER_TARGET}" ]]; then
+        BACKUP_TARGET="${KLIPPER_TARGET}.pre-tool-vision-$(date +%Y%m%d-%H%M%S)"
+        sudo -u "${INSTALL_USER}" cp -a -- "${KLIPPER_TARGET}" "${BACKUP_TARGET}"
+        echo "  Preserved existing regular file as ${BACKUP_TARGET}"
+    fi
+    sudo -u "${INSTALL_USER}" ln -sfn -- \
+        "${RUNTIME_DIR}/klippy/extras/${klipper_file}" "${KLIPPER_TARGET}"
+done
 
 echo "[4/6] Installing a path-independent systemd unit..."
 sudo -u "${INSTALL_USER}" mkdir -p -- "${LOG_DIR}"
@@ -194,8 +216,10 @@ echo "Installation complete. No Git repository was created on the printer."
 echo "Runtime: ${RUNTIME_DIR}"
 echo "Editable Mainsail config: ${CONFIG_TARGET}"
 echo "Next steps:"
-echo "  1. Set real camera_x/y/z_pos and camera_safe_z in tool_vision.cfg."
+echo "  1. Set only the optional Z-switch pin in tool_vision.cfg."
 echo "  2. Disable [axiscope] and [tools_calibrate]."
 echo "  3. Include Tool-Vision/tool_vision.cfg from printer.cfg."
-echo "  4. FIRMWARE_RESTART, then run TV_STATUS and TV_CAMERA_CHECK."
-echo "Service health: http://${LISTEN_HOST}:${LISTEN_PORT}/api/v1/health"
+echo "  4. Restart, home, jog T0 over the camera, and run TV_SETUP_CAMERA."
+echo "  5. Jog T0 above the switch and run TV_SETUP_SWITCH (when pin is set)."
+echo "  6. Run TV_CALIBRATE MODE=XYZ. Results are report-only by default."
+echo "Service health: http://${LISTEN_HOST}:${LISTEN_PORT}/api/v2/health"
