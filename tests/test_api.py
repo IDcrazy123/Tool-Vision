@@ -4,7 +4,10 @@ import unittest
 from unittest import mock
 
 from server.app import ServiceState, create_app
-from server.detection import DetectionError
+from server.detection import DetectionError, NozzleDetector
+
+import cv2
+import numpy as np
 
 
 class ApiContractTests(unittest.TestCase):
@@ -74,6 +77,36 @@ class ServiceConcurrencyTests(unittest.TestCase):
                 with self.assertRaises(DetectionError):
                     state.configure({"camera_source": "unused"})
                 camera_class.assert_not_called()
+        finally:
+            state.executor.shutdown(wait=False, cancel_futures=True)
+
+    def test_camera_setup_learns_and_installs_verified_profile(self):
+        class Camera:
+            @staticmethod
+            def capture():
+                frame = np.full((480, 640, 3), 255, dtype=np.uint8)
+                cv2.circle(frame, (320, 240), 22, (0, 0, 0), -1)
+                return frame
+
+        settings = {
+            "camera_source": "unused",
+            "detector_polarity": "auto",
+            "detection_stable_frames": 1,
+            "detection_frame_interval_ms": 0,
+        }
+        state = ServiceState(logging.getLogger("tool_vision_setup_test"))
+        state.camera = Camera()
+        state.detector = NozzleDetector(settings, state.log)
+        state.settings = dict(settings)
+        try:
+            result = state.setup_camera()
+            self.assertTrue(result["observation"]["focus_ok"])
+            self.assertIn("detector_min_area_ratio", result["learned_settings"])
+            self.assertEqual(
+                state.settings["detector_min_area_ratio"],
+                result["learned_settings"]["detector_min_area_ratio"],
+            )
+            self.assertIsNone(state.active_job)
         finally:
             state.executor.shutdown(wait=False, cancel_futures=True)
 

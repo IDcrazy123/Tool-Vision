@@ -1,4 +1,4 @@
-# Tool Vision 2
+# Tool Vision 2.1
 
 Tool Vision measures relative **X, Y, and Z tool offsets** on Klipper
 toolchanger printers by combining an upward-facing nozzle camera with a fixed
@@ -11,6 +11,9 @@ their hardware assumptions:
   radial pixel-to-motion calibration, and iterative nozzle centering.
 - Axiscope-style `PrinterProbeMultiAxis` switch probing, dynamic tool lists,
   reference-tool deltas, and configurable G-code workflow hooks.
+- Teach-once setup: jog T0 over each randomly placed station and run one command;
+  positions and verified image settings persist across Klipper restarts.
+- Automatic nozzle detector training and a resolution-independent focus check.
 - Native camera frames: no 640x480 constant and no forced resize.
 - Resolution-relative target, ROI, and blob-area settings.
 - Safe station travel: Z is lifted before every XY move to the camera or switch.
@@ -24,8 +27,8 @@ best printing offsets because of switch force, nozzle temperature, bed
 temperature, frame expansion, and measurement location. Validate every result
 with a controlled first-layer print before applying it.
 
-Tool Vision ships disabled by design. Do not enable it on a production printer
-until the camera and switch station coordinates have been measured. If
+Tool Vision ships disabled by design. Do not enable automatic movement on a
+production printer until the camera and switch stations have been taught. If
 `[axiscope]` or `[tools_calibrate]` is already active, disable it before enabling
 `[tool_vision]`.
 
@@ -85,6 +88,20 @@ git submodule update --init --recursive
 The submodules are development references kept on the PC. They are never
 downloaded or copied into the printer runtime.
 
+### Logic adopted from the reference projects
+
+kTAMV established the useful interaction pattern of centering a nozzle and
+capturing the current toolhead position as the measurement origin. Its original
+state is runtime-only and its image math assumes 640x480. Axiscope added
+multi-axis switch probing and a command that can take the current switch
+position, but those live values are also not a complete persistent setup.
+
+Tool Vision combines those workflows without copying their hardware
+assumptions: `TV_SETUP_CAMERA` learns the current position, detector profile,
+focus quality, and native-resolution transform; `TV_SETUP_ZSWITCH` probes from
+the current position and learns the verified approach and trigger. Both are
+written atomically to `tool_vision_state.json` and loaded after restart.
+
 ## Camera compatibility
 
 `camera_source` supports:
@@ -115,26 +132,25 @@ relaxed contour profiles filter candidates by:
 - inertia/aspect ratio;
 - distance to the configured target.
 
-The detector accepts a position only after `detection_stable_frames`
-consecutive samples cluster within the configured tolerance. Results include
+The detector accepts a position only after consecutive samples cluster within
+the active tolerance. Results include
 the native frame size, confidence, chosen strategy, diameter, and X/Y sample
 standard deviation.
 
-Important tuning groups in `tool_vision.cfg`:
+During `TV_SETUP_CAMERA`, a permissive detector first finds the reference
+nozzle. Tool Vision then derives and verifies a hardware-specific profile for:
 
-| Goal | Parameters |
-|---|---|
-| Crop unrelated objects | `camera_roi_*` ratios |
-| Move the optical target | `camera_target_*_ratio` |
-| Detect dark or bright openings | `detector_polarity` |
-| Globally relax/tighten | `detector_sensitivity` |
-| Match nozzle apparent size | `detector_min/max_area_ratio` |
-| Reject irregular blobs | circularity/convexity/inertia |
-| Reject camera jitter | stable frames and stability tolerance |
-| Compensate lighting | gamma, adaptive C, blur size |
+- dark or light nozzle polarity;
+- native-frame area range and contour shape limits;
+- adaptive threshold block size and blur size;
+- stability tolerance and confidence limit;
+- a broad center ROI that still contains calibration movement.
 
-Change one group at a time and use `TV_CAMERA_CHECK` plus
-`/api/v1/frame` to evaluate the result.
+Focus is scored around the detected nozzle after a small denoise pass and is
+normalized by local contrast. A blurry image stops setup before any learned
+state is saved. Physically focus the camera and rerun the same command. Manual
+detector parameters remain supported through `detector_mode: manual`, but are
+an advanced fallback rather than normal installation work.
 
 ## Camera calibration model
 
@@ -150,9 +166,9 @@ and requires at least eight useful points. Calibration is rejected when the
 design matrix is rank-deficient, ill-conditioned, or exceeds
 `camera_max_rms_error`.
 
-Unlike the legacy implementation, there is no hard-coded damping constant in
-the fitted matrix. Damping and maximum step size are explicit centering safety
-parameters in the Klipper config.
+Unlike the legacy implementation, there is no fixed image size or hard-coded
+damping in the fitted matrix. Safe centering defaults live in the extension;
+advanced overrides remain available without cluttering the example config.
 
 ## Installation without cloning on the printer
 
@@ -194,19 +210,32 @@ runtime, generates a systemd unit from the real paths, replaces the legacy
 `tool_vision.service`, and restarts Klipper. Existing `tool_vision.cfg` values
 are preserved and `printer.cfg` is never edited automatically.
 
-## Required hardware configuration
+On upgrade, a previously customized `.cfg` is intentionally not replaced. The
+new learned state takes precedence when `station_mode: auto` and
+`detector_mode: auto` (both defaults), so old coordinate/detector lines can be
+removed after setup is verified. Back up the old file before replacing it with
+the minimal current example if the new macro-panel buttons are also desired.
 
-1. Mount and configure an upward-facing nozzle camera.
-2. With T0 active, manually place the nozzle at the intended optical focus.
-3. Record `camera_x_pos`, `camera_y_pos`, and `camera_z_pos`.
-4. Choose `camera_safe_z` high enough to clear all stationary hardware before
-   XY station travel.
-5. Measure the Z-switch X/Y/contact Z and choose `zswitch_safe_z`.
-6. Verify switch pin polarity with a read-only endstop query before probing.
-7. Set all motion speeds conservatively for the target machine.
+## Minimal hardware configuration
 
-Camera station values are intentionally commented in the example config. Tool
-Vision refuses movement until all four values exist.
+The normal `tool_vision.cfg` contains only:
+
+```ini
+[tool_vision]
+camera_source: http://127.0.0.1:8080/?action=stream
+# pin: ^your_real_switch_pin   # enable only when using Z measurement
+```
+
+Camera-only XY calibration needs no switch pin. For Z, set the real pin and
+verify its polarity with `QUERY_ENDSTOPS` before any probing. Tool numbers,
+reference T0, movement calibration, detector thresholds, and station
+coordinates use safe defaults or are discovered/taught automatically.
+
+The same file also provides four Mainsail/Fluidd macro-panel buttons:
+`TOOL_VISION_STATUS`, `TOOL_VISION_SETUP_CAMERA`,
+`TOOL_VISION_SETUP_ZSWITCH`, and `TOOL_VISION_CALIBRATE_ALL`. They expose the
+normal 1/2/3 workflow without requiring users to remember command parameters;
+the lower-level `TV_*` commands remain available for advanced use.
 
 ## Enable on Klipper
 
@@ -218,12 +247,10 @@ printer:
 [include path/to/tool_vision.cfg]
 ```
 
-Run `FIRMWARE_RESTART` and verify:
+Run `FIRMWARE_RESTART`, home XYZ, select T0, and verify:
 
 ```gcode
 TV_STATUS
-TV_SERVER_CONFIGURE
-TV_CAMERA_CHECK
 ```
 
 The processed frame is available locally at:
@@ -235,18 +262,43 @@ http://127.0.0.1:8085/api/v1/frame
 Bind the service to `0.0.0.0` only when LAN access is required and protected by
 the local network/firewall.
 
-## Progressive commissioning
+## Two-command setup
 
-Do not begin with a full five-tool run. Commission in this order:
+### 1. Teach the camera
 
-1. `TV_CAMERA_CHECK` while the clean T0 nozzle is manually visible.
-2. `TV_MOVE_TO_CAMERA` at low speeds; confirm safe-Z-before-XY motion.
-3. `TV_CALIBRATE_CAMERA TOOL=0`; inspect RMS and condition values.
-4. `TV_MEASURE_XY TOOL=0 REFERENCE=1` twice; confirm repeatability.
-5. `TV_MOVE_TO_ZSWITCH`; confirm approach height without probing.
-6. `TV_MEASURE_Z TOOL=0 REFERENCE=1`; repeat and compare trigger Z.
-7. Measure one non-reference tool.
-8. Only then run `TV_CALIBRATE_ALL MODE=XYZ`.
+With clean T0 active, jog the nozzle over the upward camera and adjust Z/physical
+focus until the image looks sharp. Then run:
+
+```gcode
+TV_SETUP_CAMERA
+```
+
+The command checks focus, learns and verifies the detector, calibrates
+pixel-to-machine movement, centers T0, and persists the final XYZ station. If
+the fixture is taller than the default 5 mm clearance, specify a known safe
+height once, for example `TV_SETUP_CAMERA SAFE_Z=20`.
+
+Camera setup makes a local radial movement of 0.6 mm around the taught point.
+Ensure the nozzle is visible with enough frame and physical clearance for that
+movement before running the command.
+
+### 2. Teach the switch
+
+With T0 active, jog the nozzle directly above the switch and close enough that
+the configured `probe_max_distance` can reach it. Then run:
+
+```gcode
+TV_SETUP_ZSWITCH
+```
+
+The command performs a short multi-sample probe, verifies downward travel, and
+persists X/Y, approach Z, trigger Z, and safe Z. Use `SAFE_Z=...` here too when
+the default clearance cannot clear surrounding fixtures.
+
+Software cannot see every printed bracket or obstruction. On the first run,
+use `TV_MOVE_TO_CAMERA` and `TV_MOVE_TO_ZSWITCH` separately and confirm that Z
+lifts before XY travel. Then measure T0 twice, one non-reference tool, and only
+after repeatability is confirmed run `TV_CALIBRATE_ALL MODE=XYZ`.
 
 ## G-code commands
 
@@ -254,7 +306,9 @@ Do not begin with a full five-tool run. Commission in this order:
 |---|---|
 | `TV_STATUS` | Klipper/server status and last error |
 | `TV_SERVER_CONFIGURE` | Send current `.cfg` camera/detector values |
-| `TV_CAMERA_CHECK` | Detect at the current position without motion |
+| `TV_CAMERA_CHECK` | Detect and report confidence/focus without motion |
+| `TV_SETUP_CAMERA [SAFE_Z=n]` | Teach, focus-check, auto-tune, calibrate, and persist camera station |
+| `TV_SETUP_ZSWITCH [SAFE_Z=n]` | Probe, verify, and persist switch station |
 | `TV_MOVE_TO_CAMERA` | Safe move to the camera station |
 | `TV_MOVE_TO_ZSWITCH` | Safe move to the switch approach point |
 | `TV_CALIBRATE_CAMERA [TOOL=0]` | Fit pixel-to-machine movement |
@@ -272,6 +326,12 @@ Results are written atomically to `result_file`, separate from all Klipper
 configuration files. The console prints measured values and suggested
 `SET_TOOL_PARAMETER` commands. Tool Vision never executes those commands and
 never calls `SAVE_TOOL_PARAMETER` or `SAVE_CONFIG`.
+
+Learned hardware setup is stored separately in
+`~/printer_data/config/tool_vision_state.json`. Delete that file to discard all
+learned setup, or use `station_mode: manual` / `detector_mode: manual` to keep a
+legacy advanced configuration authoritative. Neither state nor results modify
+production tool offsets.
 
 Before applying anything:
 
@@ -299,7 +359,7 @@ job is active, the last native frame size, and transform quality.
 ```
 
 This removes the service and Klipper symlink. It preserves the project, venv,
-measurement results, and any installer-created backup. Use
+learned setup state, measurement results, and any installer-created backup. Use
 `./uninstall.sh --purge-venv` only when the isolated environment should also be
 removed.
 

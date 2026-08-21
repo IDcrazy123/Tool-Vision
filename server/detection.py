@@ -23,6 +23,13 @@ def _odd(value, minimum=3):
 class NozzleDetector:
     """Try multiple preprocessors and require a stable multi-frame result."""
 
+    # The focus score is normalized by local contrast, so the same thresholds
+    # work across native camera resolutions and common exposure levels.  These
+    # are deliberately internal defaults: setup should be simple for normal
+    # hardware while advanced users may still override camera_min_focus_score.
+    DEFAULT_MIN_FOCUS_SCORE = 0.006
+    CLEAR_FOCUS_SCORE = 0.015
+
     def __init__(self, settings, logger):
         self.log = logger
         self.settings = dict(settings)
@@ -81,6 +88,11 @@ class NozzleDetector:
         self.interval = float(
             self.settings.get("detection_frame_interval_ms", 120)
         ) / 1000.0
+        self.min_focus_score = float(
+            self.settings.get(
+                "camera_min_focus_score", self.DEFAULT_MIN_FOCUS_SCORE
+            )
+        )
         self._validate()
 
     def _validate(self):
@@ -111,6 +123,8 @@ class NozzleDetector:
             raise DetectionError("detection stability settings are invalid")
         if self.stability_px < 0 or not 0.0 <= self.stability_ratio <= 1.0:
             raise DetectionError("detection stability tolerances are invalid")
+        if self.min_focus_score <= 0:
+            raise DetectionError("camera_min_focus_score must be positive")
 
     def detect_stable(self, camera, frame_callback=None):
         """Return a median nozzle center after consecutive stable frames."""
@@ -163,6 +177,14 @@ class NozzleDetector:
                             "runtime": time.monotonic() - started,
                         }
                     )
+                    focus_scores = [
+                        item["focus_score"]
+                        for item in observations[-self.stable_frames :]
+                        if "focus_score" in item
+                    ]
+                    if focus_scores:
+                        result["focus_score"] = float(np.median(focus_scores))
+                        result.update(self._focus_quality(result["focus_score"]))
                     return result
             if self.interval > 0:
                 time.sleep(self.interval)
@@ -222,8 +244,101 @@ class NozzleDetector:
         best = max(candidates, key=lambda item: item["confidence"])
         if best["confidence"] < self.min_confidence:
             return None, annotated
+        best.update(self._focus_metrics(frame, best))
         self._draw_candidate(annotated, best)
         return best, annotated
+
+    def recommended_settings(self, observation):
+        """Build a tolerant detector profile from a taught reference nozzle.
+
+        The learned limits are intentionally wider than the observed contour.
+        Tool nozzles and lighting drift slightly, so setup should remove manual
+        tuning without overfitting one frame or one tool.
+        """
+        width = float(observation["frame_width"])
+        height = float(observation["frame_height"])
+        frame_area = width * height
+        area_ratio = float(observation["area_px"]) / frame_area
+        diameter = float(observation["diameter_px"])
+        strategy = str(observation.get("strategy", ""))
+        polarity = "light" if strategy.endswith("light") else "dark"
+        block_size = _odd(_bounded(diameter * 1.25, 15, 101))
+        stability_px = _bounded(diameter * 0.06, 1.5, 6.0)
+
+        return {
+            "camera_target_x_ratio": self.target_x_ratio,
+            "camera_target_y_ratio": self.target_y_ratio,
+            # A broad center ROI rejects fixtures near frame edges while still
+            # leaving room for the radial calibration moves.
+            "camera_roi_x_min": 0.05,
+            "camera_roi_y_min": 0.05,
+            "camera_roi_x_max": 0.95,
+            "camera_roi_y_max": 0.95,
+            "detector_polarity": polarity,
+            "detector_gamma": self.gamma,
+            "detector_sensitivity": 1.0,
+            "detector_min_area_ratio": max(0.000001, area_ratio * 0.20),
+            "detector_max_area_ratio": min(0.30, area_ratio * 5.0),
+            "detector_min_circularity": _bounded(
+                float(observation["circularity"]) * 0.65, 0.25, 0.70
+            ),
+            "detector_min_convexity": _bounded(
+                float(observation["convexity"]) * 0.65, 0.25, 0.70
+            ),
+            "detector_min_inertia": _bounded(
+                float(observation["inertia"]) * 0.65, 0.20, 0.70
+            ),
+            "detector_min_confidence": _bounded(
+                float(observation["confidence"]) * 0.55, 0.25, 0.45
+            ),
+            "detector_adaptive_block_size": block_size,
+            "detector_adaptive_c": self.adaptive_c,
+            "detector_blur_size": 3 if diameter < 25 else 5,
+            "detection_stable_frames": self.stable_frames,
+            "detection_stability_px": stability_px,
+            "detection_stability_ratio": 0.0,
+            "detection_timeout": self.timeout,
+            "detection_frame_interval_ms": int(round(self.interval * 1000.0)),
+            "camera_min_focus_score": self.min_focus_score,
+        }
+
+    def _focus_metrics(self, frame, candidate):
+        """Return a no-reference sharpness score around the detected nozzle."""
+        height, width = frame.shape[:2]
+        radius = max(12, int(round(candidate["diameter_px"] * 1.5)))
+        cx = int(round(candidate["x"]))
+        cy = int(round(candidate["y"]))
+        x0, x1 = max(0, cx - radius), min(width, cx + radius + 1)
+        y0, y1 = max(0, cy - radius), min(height, cy + radius + 1)
+        gray = cv2.cvtColor(frame[y0:y1, x0:x1], cv2.COLOR_BGR2GRAY)
+        if gray.size < 64:
+            return {
+                "focus_score": 0.0,
+                "focus_laplacian": 0.0,
+                "focus_contrast": 0.0,
+                **self._focus_quality(0.0),
+            }
+        # A tiny denoise pass prevents sensor speckle from masquerading as
+        # optical detail without erasing the actual nozzle edge.
+        gray = cv2.GaussianBlur(gray, (3, 3), 0.45)
+        laplacian = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+        contrast = float(np.std(gray))
+        score = laplacian / max(contrast * contrast, 1.0)
+        return {
+            "focus_score": score,
+            "focus_laplacian": laplacian,
+            "focus_contrast": contrast,
+            **self._focus_quality(score),
+        }
+
+    def _focus_quality(self, score):
+        if score >= self.CLEAR_FOCUS_SCORE:
+            grade = "clear"
+        elif score >= self.min_focus_score:
+            grade = "usable"
+        else:
+            grade = "blurry"
+        return {"focus_ok": grade != "blurry", "focus_grade": grade}
 
     def _preprocess(self, gray):
         masks = []

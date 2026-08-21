@@ -7,7 +7,7 @@ PROJECT = pathlib.Path(__file__).resolve().parents[1]
 
 
 class ProjectContractTests(unittest.TestCase):
-    def test_example_config_has_one_valid_tool_vision_section(self):
+    def test_example_config_has_minimal_tool_vision_options_and_ui_macros(self):
         parser = configparser.RawConfigParser(
             allow_no_value=True,
             inline_comment_prefixes=("#", ";"),
@@ -15,9 +15,17 @@ class ProjectContractTests(unittest.TestCase):
         )
         loaded = parser.read(PROJECT / "tool_vision.cfg", encoding="utf-8")
         self.assertEqual(len(loaded), 1)
-        self.assertEqual(parser.sections(), ["tool_vision"])
-        self.assertEqual(parser.get("tool_vision", "camera_width"), "0")
-        self.assertEqual(parser.get("tool_vision", "camera_height"), "0")
+        self.assertEqual(parser.options("tool_vision"), ["camera_source"])
+        self.assertEqual(
+            parser.sections(),
+            [
+                "tool_vision",
+                "gcode_macro TOOL_VISION_STATUS",
+                "gcode_macro TOOL_VISION_SETUP_CAMERA",
+                "gcode_macro TOOL_VISION_SETUP_ZSWITCH",
+                "gcode_macro TOOL_VISION_CALIBRATE_ALL",
+            ],
+        )
 
     def test_server_has_no_forced_resize_or_fixed_frame_constants(self):
         source = "\n".join(

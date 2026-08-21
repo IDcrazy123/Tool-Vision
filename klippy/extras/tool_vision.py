@@ -18,8 +18,34 @@ class ToolVisionError(RuntimeError):
 
 
 class ToolVision:
-    VERSION = "2.0.0"
+    VERSION = "2.1.0"
     STATE_NAME = "TOOL_VISION_STATE"
+    DETECTOR_ATTRIBUTES = {
+        "camera_target_x_ratio": "camera_target_x_ratio",
+        "camera_target_y_ratio": "camera_target_y_ratio",
+        "camera_roi_x_min": "camera_roi_x_min",
+        "camera_roi_y_min": "camera_roi_y_min",
+        "camera_roi_x_max": "camera_roi_x_max",
+        "camera_roi_y_max": "camera_roi_y_max",
+        "detector_gamma": "detector_gamma",
+        "detector_sensitivity": "detector_sensitivity",
+        "detector_min_area_ratio": "detector_min_area_ratio",
+        "detector_max_area_ratio": "detector_max_area_ratio",
+        "detector_min_circularity": "detector_min_circularity",
+        "detector_min_convexity": "detector_min_convexity",
+        "detector_min_inertia": "detector_min_inertia",
+        "detector_min_confidence": "detector_min_confidence",
+        "detector_adaptive_block_size": "detector_adaptive_block_size",
+        "detector_adaptive_c": "detector_adaptive_c",
+        "detector_blur_size": "detector_blur_size",
+        "detector_polarity": "detector_polarity",
+        "detection_stable_frames": "detection_stable_frames",
+        "detection_stability_px": "detection_stability_px",
+        "detection_stability_ratio": "detection_stability_ratio",
+        "detection_timeout": "detection_timeout",
+        "detection_frame_interval_ms": "detection_frame_interval_ms",
+        "camera_min_focus_score": "camera_min_focus_score",
+    }
 
     def __init__(self, config):
         self.printer = config.get_printer()
@@ -59,6 +85,8 @@ class ToolVision:
         self.camera_warmup_frames = config.getint(
             "camera_warmup_frames", 0, minval=0
         )
+        self.detector_mode = config.get("detector_mode", "auto").lower()
+        self.station_mode = config.get("station_mode", "auto").lower()
 
         self.camera_x = config.getfloat("camera_x_pos", None)
         self.camera_y = config.getfloat("camera_y_pos", None)
@@ -130,6 +158,9 @@ class ToolVision:
         self.detection_frame_interval_ms = config.getint(
             "detection_frame_interval_ms", 120, minval=0
         )
+        self.camera_min_focus_score = config.getfloat(
+            "camera_min_focus_score", 0.006, above=0.0
+        )
 
         self.reference_tool = config.getint("reference_tool", 0, minval=0)
         self.tool_select_command = config.get("tool_select_command", "T{tool}")
@@ -188,6 +219,7 @@ class ToolVision:
         self.zswitch_x = config.getfloat("zswitch_x_pos", None)
         self.zswitch_y = config.getfloat("zswitch_y_pos", None)
         self.zswitch_z = config.getfloat("zswitch_z_pos", None)
+        self.zswitch_approach_z = config.getfloat("zswitch_approach_z", None)
         self.zswitch_safe_z = config.getfloat("zswitch_safe_z", None)
         self.zswitch_lift_z = config.getfloat(
             "zswitch_lift_z", 2.0, minval=0.0
@@ -199,12 +231,23 @@ class ToolVision:
             "probe_max_distance", 10.0, above=0.0
         )
         self.probe_samples = config.getint("probe_samples", 10, minval=1)
+        if self.zswitch_approach_z is None and self.zswitch_z is not None:
+            self.zswitch_approach_z = self.zswitch_z + self.zswitch_lift_z
 
         self.allow_during_print = config.getboolean("allow_during_print", False)
+        self.setup_clearance = config.getfloat(
+            "setup_clearance", 5.0, above=0.0
+        )
         self.result_file = os.path.expanduser(
             config.get(
                 "result_file",
                 "~/printer_data/config/tool_vision_results.json",
+            )
+        )
+        self.state_file = os.path.expanduser(
+            config.get(
+                "state_file",
+                "~/printer_data/config/tool_vision_state.json",
             )
         )
 
@@ -254,16 +297,167 @@ class ToolVision:
         self.last_observation = None
         self.last_error = None
         self.last_run = None
+        self.learned_state = {}
+        self.last_setup = None
+
+        # Preserve explicit configuration as a fallback for a missing, corrupt,
+        # or manually disabled learned-state file.
+        self._configured_stations = {
+            "camera": {
+                "x": self.camera_x,
+                "y": self.camera_y,
+                "z": self.camera_z,
+                "safe_z": self.camera_safe_z,
+            },
+            "zswitch": {
+                "x": self.zswitch_x,
+                "y": self.zswitch_y,
+                "trigger_z": self.zswitch_z,
+                "approach_z": self.zswitch_approach_z,
+                "safe_z": self.zswitch_safe_z,
+            },
+        }
+        self._configured_detector = self._detector_settings()
+        self._load_learned_state()
 
         self._validate_config(config)
         self._register_commands()
         self.printer.register_event_handler("klippy:connect", self._handle_connect)
+
+    # Learned setup state
+
+    def _detector_settings(self):
+        return {
+            key: getattr(self, attribute)
+            for key, attribute in self.DETECTOR_ATTRIBUTES.items()
+        }
+
+    def _apply_detector_settings(self, settings):
+        """Apply server-verified detector values with strict type handling."""
+        if not isinstance(settings, dict):
+            raise ToolVisionError("learned detector settings must be an object")
+        for key, attribute in self.DETECTOR_ATTRIBUTES.items():
+            if key not in settings:
+                continue
+            current = getattr(self, attribute)
+            value = settings[key]
+            try:
+                if isinstance(current, float):
+                    value = float(value)
+                    if not math.isfinite(value):
+                        raise ValueError("non-finite value")
+                elif isinstance(current, int):
+                    value = int(value)
+                else:
+                    value = str(value)
+            except (TypeError, ValueError):
+                raise ToolVisionError("invalid learned detector value for %s" % key)
+            setattr(self, attribute, value)
+
+    @staticmethod
+    def _state_number(value, name):
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            raise ToolVisionError("invalid learned position %s" % name)
+        if not math.isfinite(value):
+            raise ToolVisionError("invalid learned position %s" % name)
+        return value
+
+    def _apply_learned_station(self, name, station):
+        if not isinstance(station, dict):
+            raise ToolVisionError("learned %s station must be an object" % name)
+        if name == "camera":
+            fields = {
+                "x": "camera_x",
+                "y": "camera_y",
+                "z": "camera_z",
+                "safe_z": "camera_safe_z",
+            }
+        else:
+            fields = {
+                "x": "zswitch_x",
+                "y": "zswitch_y",
+                "trigger_z": "zswitch_z",
+                "approach_z": "zswitch_approach_z",
+                "safe_z": "zswitch_safe_z",
+            }
+        for key, attribute in fields.items():
+            if key in station:
+                setattr(
+                    self,
+                    attribute,
+                    self._state_number(station[key], "%s.%s" % (name, key)),
+                )
+
+    def _load_learned_state(self):
+        """Load teach-once positions without ever modifying Klipper config."""
+        if not self.state_file or not os.path.isfile(self.state_file):
+            return
+        try:
+            with open(self.state_file, "r") as handle:
+                payload = json.load(handle)
+            if not isinstance(payload, dict) or payload.get("schema_version") != 1:
+                raise ToolVisionError("unsupported learned-state schema")
+            self.learned_state = payload
+            stations = payload.get("stations", {})
+            if not isinstance(stations, dict):
+                raise ToolVisionError("learned stations must be an object")
+            if self.station_mode == "auto":
+                if "camera" in stations:
+                    self._apply_learned_station("camera", stations["camera"])
+                if "zswitch" in stations:
+                    self._apply_learned_station("zswitch", stations["zswitch"])
+            if self.detector_mode == "auto" and payload.get("detector_settings"):
+                self._apply_detector_settings(payload["detector_settings"])
+        except (OSError, ValueError, ToolVisionError) as exc:
+            # A corrupt optional state file must not prevent Klipper startup.
+            # Status exposes the reason and a new setup run replaces the file.
+            self.learned_state = {}
+            camera = self._configured_stations["camera"]
+            self.camera_x = camera["x"]
+            self.camera_y = camera["y"]
+            self.camera_z = camera["z"]
+            self.camera_safe_z = camera["safe_z"]
+            zswitch = self._configured_stations["zswitch"]
+            self.zswitch_x = zswitch["x"]
+            self.zswitch_y = zswitch["y"]
+            self.zswitch_z = zswitch["trigger_z"]
+            self.zswitch_approach_z = zswitch["approach_z"]
+            self.zswitch_safe_z = zswitch["safe_z"]
+            self._apply_detector_settings(self._configured_detector)
+            self.last_error = "ignored learned state: %s" % exc
+
+    def _save_learned_state(self):
+        if not self.state_file:
+            return
+        payload = dict(self.learned_state)
+        payload.update(
+            {
+                "schema_version": 1,
+                "tool_vision_version": self.VERSION,
+                "updated": time.time(),
+            }
+        )
+        parent = os.path.dirname(self.state_file)
+        if parent and not os.path.isdir(parent):
+            os.makedirs(parent)
+        temporary = self.state_file + ".tmp"
+        with open(temporary, "w") as handle:
+            json.dump(payload, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+        os.replace(temporary, self.state_file)
+        self.learned_state = payload
 
     def _validate_config(self, config):
         if self.camera_rotation not in (0, 90, 180, 270):
             raise config.error("camera_rotation must be 0, 90, 180, or 270")
         if self.camera_mode not in ("auto", "http", "opencv"):
             raise config.error("camera_mode must be auto, http, or opencv")
+        if self.detector_mode not in ("auto", "manual"):
+            raise config.error("detector_mode must be auto or manual")
+        if self.station_mode not in ("auto", "manual"):
+            raise config.error("station_mode must be auto or manual")
         if self.detector_polarity not in ("auto", "dark", "light"):
             raise config.error("detector_polarity must be auto, dark, or light")
         if self.camera_model not in ("affine", "quadratic"):
@@ -286,9 +480,9 @@ class ToolVision:
         ):
             raise config.error("camera_safe_z must be at or above camera_z_pos")
         if (
-            self.zswitch_z is not None
+            self.zswitch_approach_z is not None
             and self.zswitch_safe_z is not None
-            and self.zswitch_safe_z < self.zswitch_z + self.zswitch_lift_z
+            and self.zswitch_safe_z < self.zswitch_approach_z
         ):
             raise config.error(
                 "zswitch_safe_z must be at or above the switch approach Z"
@@ -315,7 +509,16 @@ class ToolVision:
         # objects are constructed. Explicit lists are validated earlier too.
         self._validate_tool_numbers(self._config_error, self._tool_numbers())
         self.gcode.respond_info(
-            "Tool Vision %s loaded in report-only mode" % self.VERSION
+            "Tool Vision %s loaded in report-only mode; camera=%s zswitch=%s"
+            % (
+                self.VERSION,
+                "ready" if self._station_ready("camera") else "run TV_SETUP_CAMERA",
+                (
+                    "ready"
+                    if self._station_ready("zswitch")
+                    else "run TV_SETUP_ZSWITCH"
+                ),
+            )
         )
 
     def _register_commands(self):
@@ -327,7 +530,15 @@ class ToolVision:
             ),
             "TV_CAMERA_CHECK": (
                 self.cmd_CAMERA_CHECK,
-                "Detect the nozzle at the current position",
+                "Detect the nozzle and report focus at the current position",
+            ),
+            "TV_SETUP_CAMERA": (
+                self.cmd_SETUP_CAMERA,
+                "Teach the current camera position, focus, and detector profile",
+            ),
+            "TV_SETUP_ZSWITCH": (
+                self.cmd_SETUP_ZSWITCH,
+                "Teach and verify the Z switch from the current position",
             ),
             "TV_MOVE_TO_CAMERA": (
                 self.cmd_MOVE_TO_CAMERA,
@@ -427,6 +638,7 @@ class ToolVision:
             "detection_stability_ratio": self.detection_stability_ratio,
             "detection_timeout": self.detection_timeout,
             "detection_frame_interval_ms": self.detection_frame_interval_ms,
+            "camera_min_focus_score": self.camera_min_focus_score,
         }
 
     def _configure_server(self):
@@ -490,7 +702,7 @@ class ToolVision:
             values = (
                 self.zswitch_x,
                 self.zswitch_y,
-                self.zswitch_z,
+                self.zswitch_approach_z,
                 self.zswitch_safe_z,
             )
         return all(value is not None for value in values)
@@ -519,6 +731,28 @@ class ToolVision:
                     "%s target %.3f is outside %.3f..%.3f"
                     % ("XYZ"[index], item, limits[index][0], limits[index][1])
                 )
+
+    def _automatic_safe_z(self, station_z, requested=None):
+        """Choose a conservative travel height from the taught station Z.
+
+        No software can infer every printed fixture on an arbitrary machine.
+        The default lifts by setup_clearance and clamps to the configured Z
+        limit; SAFE_Z on the teach command remains available for tall hardware.
+        """
+        safe_z = (
+            float(requested)
+            if requested is not None
+            else float(station_z) + self.setup_clearance
+        )
+        limits = self._axis_limits()
+        if limits is not None and requested is None:
+            safe_z = min(safe_z, limits[2][1])
+        if safe_z <= float(station_z):
+            raise ToolVisionError(
+                "no safe Z travel clearance remains above the taught station"
+            )
+        self._validate_target(z=safe_z)
+        return safe_z
 
     def _gcode_position(self):
         pos = self.gcode_move.get_status()["gcode_position"]
@@ -555,7 +789,7 @@ class ToolVision:
             x, y, z, safe_z = (
                 self.zswitch_x,
                 self.zswitch_y,
-                self.zswitch_z + self.zswitch_lift_z,
+                self.zswitch_approach_z,
                 self.zswitch_safe_z,
             )
         travel_z = max(current[2], safe_z)
@@ -594,6 +828,188 @@ class ToolVision:
         self._run_template(self.after_tool_gcode, tool_number)
 
     # Measurement primitives
+
+    def _require_setup_tool(self, gcmd):
+        tool_number = gcmd.get_int("TOOL", self.reference_tool)
+        active = self._active_tool_number()
+        if active != tool_number:
+            raise ToolVisionError(
+                "select T%d before teaching a station; automatic pickup is "
+                "disabled while the nozzle is manually positioned" % tool_number
+            )
+        return tool_number
+
+    def _run_z_probe(self, samples):
+        start_pos = self.toolhead.get_position()
+        try:
+            measured = self.probe_multi_axis.run_probe(
+                "z-",
+                self._active_gcmd,
+                speed_ratio=self.probe_speed_ratio,
+                max_distance=self.probe_max_distance,
+                samples=samples,
+            )[2]
+        finally:
+            # PrinterProbeMultiAxis changes the kinematic position while
+            # probing.  Restore both the physical and reported start position,
+            # matching the proven Axiscope flow.
+            self.toolhead.move(start_pos, self.z_travel_speed)
+            self.toolhead.set_position(start_pos)
+            self.toolhead.wait_moves()
+        measured = float(measured)
+        if not math.isfinite(measured):
+            raise ToolVisionError("Z switch returned a non-finite trigger position")
+        return measured
+
+    def _setup_camera(self, gcmd):
+        tool_number = self._require_setup_tool(gcmd)
+        self._configure_server()
+        response = self._api(
+            "POST",
+            "/api/v1/setup/camera",
+            {},
+            timeout=self.detection_timeout * 2.0 + 10.0,
+        )
+        observation = response["observation"]
+        gcmd.respond_info(
+            "Camera focus: %s score=%.5f confidence=%.3f diameter=%.1fpx"
+            % (
+                observation.get("focus_grade", "unknown"),
+                float(observation.get("focus_score", 0.0)),
+                float(observation["confidence"]),
+                float(observation["diameter_px"]),
+            )
+        )
+        accept_blur = bool(
+            gcmd.get_int("ACCEPT_BLUR", 0, minval=0, maxval=1)
+        )
+        if not observation.get("focus_ok", False) and not accept_blur:
+            raise ToolVisionError(
+                "camera image is blurry; adjust physical focus and rerun "
+                "TV_SETUP_CAMERA (ACCEPT_BLUR=1 overrides this check)"
+            )
+
+        old_detector = self._detector_settings()
+        old_station = (
+            self.camera_x,
+            self.camera_y,
+            self.camera_z,
+            self.camera_safe_z,
+        )
+        try:
+            learned = response["learned_settings"]
+            self._apply_detector_settings(learned)
+            # Reconfigure with the learned profile so the movement calibration
+            # is verified against exactly what will be loaded after restart.
+            self._configure_server()
+            position = self._gcode_position()
+            safe_z = self._automatic_safe_z(
+                position[2], gcmd.get_float("SAFE_Z", None)
+            )
+            self.camera_x, self.camera_y, self.camera_z = position
+            self.camera_safe_z = safe_z
+            self._calibrate_camera(gcmd)
+            _, centered_observation = self._center_nozzle(gcmd)
+            centered = self._gcode_position()
+            self.camera_x = centered[0]
+            self.camera_y = centered[1]
+
+            stations = dict(self.learned_state.get("stations", {}))
+            stations["camera"] = {
+                "x": self.camera_x,
+                "y": self.camera_y,
+                "z": self.camera_z,
+                "safe_z": self.camera_safe_z,
+                "focus_score": float(observation.get("focus_score", 0.0)),
+                "focus_grade": observation.get("focus_grade", "unknown"),
+                "frame_width": int(observation["frame_width"]),
+                "frame_height": int(observation["frame_height"]),
+                "setup_tool": tool_number,
+            }
+            self.learned_state["stations"] = stations
+            self.learned_state["detector_settings"] = learned
+            self.last_setup = "camera"
+            self._save_learned_state()
+            gcmd.respond_info(
+                "Camera taught at X%.3f Y%.3f Z%.3f; safe Z %.3f. "
+                "Automatic XY calibration is ready."
+                % (
+                    self.camera_x,
+                    self.camera_y,
+                    self.camera_z,
+                    self.camera_safe_z,
+                )
+            )
+            return {
+                "station": stations["camera"],
+                "observation": centered_observation,
+                "transform": self.camera_transform,
+            }
+        except Exception:
+            (
+                self.camera_x,
+                self.camera_y,
+                self.camera_z,
+                self.camera_safe_z,
+            ) = old_station
+            self._apply_detector_settings(old_detector)
+            self.server_configured = False
+            raise
+
+    def _setup_zswitch(self, gcmd):
+        if self.probe_multi_axis is None:
+            raise ToolVisionError("configure only the Z switch pin before setup")
+        tool_number = self._require_setup_tool(gcmd)
+        position = self._gcode_position()
+        safe_z = self._automatic_safe_z(
+            position[2], gcmd.get_float("SAFE_Z", None)
+        )
+        samples = gcmd.get_int(
+            "SAMPLES", min(3, self.probe_samples), minval=1, maxval=20
+        )
+        probe_start_z = float(self.toolhead.get_position()[2])
+        measured = self._run_z_probe(samples)
+        # Probe results and toolhead.get_position() share the raw kinematic
+        # coordinate system.  The taught approach remains a G-code position so
+        # it continues to work correctly with per-tool offsets.
+        lift = probe_start_z - measured
+        if lift <= 0.0 or lift > self.probe_max_distance + 0.001:
+            raise ToolVisionError(
+                "unexpected switch travel %.3fmm; start above the switch and "
+                "within probe_max_distance" % lift
+            )
+
+        self.zswitch_x = position[0]
+        self.zswitch_y = position[1]
+        self.zswitch_z = measured
+        self.zswitch_approach_z = position[2]
+        self.zswitch_safe_z = safe_z
+        self.zswitch_lift_z = lift
+        stations = dict(self.learned_state.get("stations", {}))
+        stations["zswitch"] = {
+            "x": self.zswitch_x,
+            "y": self.zswitch_y,
+            "trigger_z": self.zswitch_z,
+            "approach_z": self.zswitch_approach_z,
+            "safe_z": self.zswitch_safe_z,
+            "setup_tool": tool_number,
+            "setup_samples": samples,
+        }
+        self.learned_state["stations"] = stations
+        self.last_setup = "zswitch"
+        self._save_learned_state()
+        gcmd.respond_info(
+            "Z switch taught at X%.3f Y%.3f, approach Z%.3f, trigger "
+            "Z%.5f; safe Z %.3f. Automatic Z calibration is ready."
+            % (
+                self.zswitch_x,
+                self.zswitch_y,
+                self.zswitch_approach_z,
+                self.zswitch_z,
+                self.zswitch_safe_z,
+            )
+        )
+        return stations["zswitch"]
 
     def _calibrate_camera(self, gcmd):
         self._move_to_station("camera")
@@ -752,19 +1168,7 @@ class ToolVision:
             raise ToolVisionError("Z switch pin is not configured")
         self._select_tool(tool_number)
         self._move_to_station("zswitch")
-        start_pos = self.toolhead.get_position()
-        try:
-            measured = self.probe_multi_axis.run_probe(
-                "z-",
-                self._active_gcmd,
-                speed_ratio=self.probe_speed_ratio,
-                max_distance=self.probe_max_distance,
-                samples=self.probe_samples,
-            )[2]
-        finally:
-            self.toolhead.move(start_pos, self.z_travel_speed)
-            self.toolhead.set_position(start_pos)
-            self.toolhead.wait_moves()
+        measured = self._run_z_probe(self.probe_samples)
         if set_reference:
             self.z_reference = float(measured)
             offset = 0.0
@@ -940,11 +1344,14 @@ class ToolVision:
         except Exception as exc:
             server = "unavailable (%s)" % exc
         gcmd.respond_info(
-            "Tool Vision %s: busy=%s server=%s results=%d last_error=%s"
+            "Tool Vision %s: busy=%s server=%s camera=%s zswitch=%s "
+            "results=%d last_error=%s"
             % (
                 self.VERSION,
                 self.busy,
                 server,
+                "ready" if self._station_ready("camera") else "not taught",
+                "ready" if self._station_ready("zswitch") else "not taught",
                 len(self.results),
                 self.last_error or "none",
             )
@@ -960,17 +1367,26 @@ class ToolVision:
     def cmd_CAMERA_CHECK(self, gcmd):
         observation = self._detect()
         gcmd.respond_info(
-            "Nozzle: X%.2f Y%.2f frame=%dx%d confidence=%.3f stdev=(%.2f, %.2f)"
+            "Nozzle: X%.2f Y%.2f frame=%dx%d confidence=%.3f "
+            "focus=%s/%.5f stdev=(%.2f, %.2f)"
             % (
                 observation["x"],
                 observation["y"],
                 observation["frame_width"],
                 observation["frame_height"],
                 observation["confidence"],
+                observation.get("focus_grade", "unknown"),
+                observation.get("focus_score", 0.0),
                 observation["stdev_x"],
                 observation["stdev_y"],
             )
         )
+
+    def cmd_SETUP_CAMERA(self, gcmd):
+        return self._run_guarded(gcmd, lambda: self._setup_camera(gcmd))
+
+    def cmd_SETUP_ZSWITCH(self, gcmd):
+        return self._run_guarded(gcmd, lambda: self._setup_zswitch(gcmd))
 
     def cmd_MOVE_TO_CAMERA(self, gcmd):
         return self._run_guarded(gcmd, lambda: self._move_to_station("camera"))
@@ -1022,6 +1438,23 @@ class ToolVision:
             "last_error": self.last_error,
             "last_run": self.last_run,
             "result_file": self.result_file,
+            "state_file": self.state_file,
+            "camera_ready": self._station_ready("camera"),
+            "zswitch_ready": self._station_ready("zswitch"),
+            "camera_station": {
+                "x": self.camera_x,
+                "y": self.camera_y,
+                "z": self.camera_z,
+                "safe_z": self.camera_safe_z,
+            },
+            "zswitch_station": {
+                "x": self.zswitch_x,
+                "y": self.zswitch_y,
+                "trigger_z": self.zswitch_z,
+                "approach_z": self.zswitch_approach_z,
+                "safe_z": self.zswitch_safe_z,
+            },
+            "last_setup": self.last_setup,
         }
 
 

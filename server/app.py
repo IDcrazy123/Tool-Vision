@@ -88,6 +88,57 @@ class ServiceState:
             self.executor.submit(self._run_detection, job_id)
             return dict(self.jobs[job_id])
 
+    def setup_camera(self):
+        """Learn and verify a detector profile from the nozzle in view."""
+        with self.lock:
+            if self.camera is None or self.detector is None:
+                raise DetectionError("vision server is not configured")
+            if self.active_job is not None:
+                raise DetectionError("another detection job is already running")
+            self.active_job = "camera-setup"
+            camera = self.camera
+            settings = dict(self.settings)
+
+        try:
+            # Setup starts permissive.  The verified learned profile becomes
+            # stricter around the real nozzle seen by this particular camera.
+            bootstrap_settings = dict(settings)
+            bootstrap_settings.update(
+                {
+                    "camera_roi_x_min": 0.0,
+                    "camera_roi_y_min": 0.0,
+                    "camera_roi_x_max": 1.0,
+                    "camera_roi_y_max": 1.0,
+                    "detector_polarity": "auto",
+                    "detector_sensitivity": 2.0,
+                    "detector_min_area_ratio": 0.00002,
+                    "detector_max_area_ratio": 0.20,
+                    "detector_min_circularity": 0.25,
+                    "detector_min_convexity": 0.25,
+                    "detector_min_inertia": 0.20,
+                    "detector_min_confidence": 0.25,
+                }
+            )
+            bootstrap = NozzleDetector(bootstrap_settings, self.log)
+            taught = bootstrap.detect_stable(camera, self._store_frame)
+            learned = bootstrap.recommended_settings(taught)
+            verified_settings = dict(settings)
+            verified_settings.update(learned)
+            verified_detector = NozzleDetector(verified_settings, self.log)
+            verified = verified_detector.detect_stable(camera, self._store_frame)
+
+            with self.lock:
+                self.detector = verified_detector
+                self.settings = verified_settings
+                self.latest_observation = verified
+            return {
+                "observation": verified,
+                "learned_settings": learned,
+            }
+        finally:
+            with self.lock:
+                self.active_job = None
+
     def _run_detection(self, job_id):
         with self.lock:
             self.jobs[job_id]["state"] = "running"
@@ -193,7 +244,14 @@ def create_app(log_directory=None):
     def start_detection():
         try:
             return jsonify({"ok": True, "job": state.start_detection()}), 202
-        except DetectionError as exc:
+        except (CameraError, DetectionError) as exc:
+            return error_response(exc, 409)
+
+    @app.post("/api/v1/setup/camera")
+    def setup_camera():
+        try:
+            return jsonify({"ok": True, **state.setup_camera()})
+        except (CameraError, DetectionError) as exc:
             return error_response(exc, 409)
 
     @app.get("/api/v1/jobs/<job_id>")

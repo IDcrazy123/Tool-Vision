@@ -59,6 +59,35 @@ class NativeResolutionDetectionTests(unittest.TestCase):
         self.assertEqual(transformed.shape, (800, 600, 3))
         source.close()
 
+    def test_focus_score_rejects_a_blurred_reference_nozzle(self):
+        sharp = np.full((600, 800, 3), 255, dtype=np.uint8)
+        cv2.circle(sharp, (400, 300), 28, (0, 0, 0), -1)
+        blurry = cv2.GaussianBlur(sharp, (0, 0), 4.0)
+        detector = NozzleDetector(self._settings(), lambda *args: None)
+
+        sharp_result, _ = detector.detect_frame(sharp)
+        blurry_result, _ = detector.detect_frame(blurry)
+
+        self.assertIsNotNone(sharp_result)
+        self.assertIsNotNone(blurry_result)
+        self.assertTrue(sharp_result["focus_ok"])
+        self.assertGreater(
+            sharp_result["focus_score"], blurry_result["focus_score"] * 5
+        )
+        self.assertFalse(blurry_result["focus_ok"])
+
+    def test_learned_profile_brackets_the_taught_nozzle_area(self):
+        frame = np.full((720, 1280, 3), 255, dtype=np.uint8)
+        cv2.circle(frame, (640, 360), 24, (0, 0, 0), -1)
+        detector = NozzleDetector(self._settings(), lambda *args: None)
+        observation, _ = detector.detect_frame(frame)
+
+        learned = detector.recommended_settings(observation)
+        area_ratio = observation["area_px"] / (1280.0 * 720.0)
+        self.assertLess(learned["detector_min_area_ratio"], area_ratio)
+        self.assertGreater(learned["detector_max_area_ratio"], area_ratio)
+        self.assertEqual(learned["detector_polarity"], "dark")
+
 
 if __name__ == "__main__":
     unittest.main()
