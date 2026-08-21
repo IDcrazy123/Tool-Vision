@@ -1,159 +1,242 @@
-"""Camera acquisition without assuming a fixed frame size."""
+"""Camera discovery and native-resolution frame capture.
 
-import threading
-import time
+Moonraker owns webcam metadata; Crowsnest or another external service owns the
+actual stream. This module deliberately has no printer-motion responsibility.
+"""
+
+import json
+import re
+import urllib.parse
+import urllib.request
 
 import cv2
 import numpy as np
-import requests
 
 
 class CameraError(RuntimeError):
-    """Raised when a camera frame cannot be acquired."""
+    """A camera could not be selected or read safely."""
+
+
+ALIGNMENT_WORDS = (
+    "nozzle",
+    "tool",
+    "align",
+    "alignment",
+    "ktamv",
+    "toolvision",
+)
+
+
+def _http_json(url, timeout):
+    request = urllib.request.Request(
+        url, headers={"Accept": "application/json", "User-Agent": "ToolVision/3"}
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except Exception as exc:
+        raise CameraError("cannot query Moonraker webcams: %s" % exc)
+
+
+def _camera_label(camera):
+    name = str(camera.get("name") or "unnamed")
+    location = str(camera.get("location") or "unknown")
+    return "%s (%s)" % (name, location)
+
+
+def choose_camera(cameras, requested_name=None):
+    """Choose deterministically; never guess from Moonraker list order."""
+    enabled = [item for item in cameras if item.get("enabled", True)]
+    if not enabled:
+        raise CameraError("Moonraker has no enabled webcam")
+
+    if requested_name:
+        matches = [
+            item
+            for item in enabled
+            if str(item.get("name", "")).casefold() == requested_name.casefold()
+        ]
+        if len(matches) == 1:
+            return matches[0]
+        available = ", ".join(_camera_label(item) for item in enabled)
+        raise CameraError(
+            "camera_name '%s' not found; available: %s"
+            % (requested_name, available)
+        )
+
+    if len(enabled) == 1:
+        return enabled[0]
+
+    preferred = []
+    for item in enabled:
+        label = "%s %s" % (item.get("name", ""), item.get("location", ""))
+        words = set(re.findall(r"[a-z0-9]+", label.casefold()))
+        if words.intersection(ALIGNMENT_WORDS):
+            preferred.append(item)
+    if len(preferred) == 1:
+        return preferred[0]
+
+    available = ", ".join(_camera_label(item) for item in enabled)
+    raise CameraError(
+        "camera discovery is ambiguous; set camera_name or camera_source. "
+        "Enabled cameras: %s" % available
+    )
+
+
+def _camera_url(value, moonraker_url):
+    if not value:
+        return None
+    parsed = urllib.parse.urlparse(str(value))
+    if parsed.scheme:
+        return str(value)
+
+    # Moonraker defines relative webcam URLs as services on the same host at
+    # port 80, not at Moonraker's usual API port 7125.
+    moonraker = urllib.parse.urlparse(moonraker_url)
+    host = moonraker.hostname or "127.0.0.1"
+    if ":" in host and not host.startswith("["):
+        host = "[%s]" % host
+    origin = "%s://%s" % (moonraker.scheme or "http", host)
+    return urllib.parse.urljoin(origin, str(value))
+
+
+def resolve_camera(settings):
+    """Return a normalized camera descriptor from config or Moonraker."""
+    explicit = settings.get("camera_source")
+    if explicit not in (None, ""):
+        return {
+            "name": "explicit",
+            "location": "configured",
+            "source": explicit,
+            "flip_horizontal": False,
+            "flip_vertical": False,
+            "rotation": 0,
+            "discovered": False,
+        }
+
+    moonraker_url = str(
+        settings.get("moonraker_url") or "http://127.0.0.1:7125"
+    ).rstrip("/")
+    payload = _http_json(
+        moonraker_url + "/server/webcams/list",
+        float(settings.get("connect_timeout", 3.0)),
+    )
+    result = payload.get("result", payload)
+    cameras = result.get("webcams", []) if isinstance(result, dict) else []
+    if not isinstance(cameras, list):
+        raise CameraError("Moonraker returned an invalid webcam list")
+    camera = choose_camera(cameras, settings.get("camera_name"))
+    source = _camera_url(camera.get("snapshot_url"), moonraker_url)
+    if not source:
+        source = _camera_url(camera.get("stream_url"), moonraker_url)
+    if not source:
+        raise CameraError("selected camera has no snapshot_url or stream_url")
+
+    rotation = int(camera.get("rotation", 0) or 0)
+    if rotation not in (0, 90, 180, 270):
+        raise CameraError("Moonraker camera rotation must be 0, 90, 180, or 270")
+    return {
+        "name": str(camera.get("name") or "unnamed"),
+        "location": str(camera.get("location") or "unknown"),
+        "source": source,
+        "flip_horizontal": bool(camera.get("flip_horizontal", False)),
+        "flip_vertical": bool(camera.get("flip_vertical", False)),
+        "rotation": rotation,
+        "discovered": True,
+        "uid": camera.get("uid"),
+    }
 
 
 class CameraSource:
-    """Read frames from HTTP MJPEG/snapshot, RTSP, or a V4L2 device."""
+    """Capture a frame without resizing it."""
 
-    def __init__(self, settings, logger):
-        self.log = logger
-        self.settings = dict(settings)
-        self.source = str(self.settings.get("camera_source", "")).strip()
-        if not self.source:
-            raise CameraError("camera_source is required")
-
-        self.mode = str(self.settings.get("camera_mode", "auto")).lower()
-        if self.mode not in ("auto", "http", "opencv"):
-            raise CameraError("camera_mode must be auto, http, or opencv")
-
-        self.rotation = int(self.settings.get("camera_rotation", 0))
-        if self.rotation not in (0, 90, 180, 270):
-            raise CameraError("camera_rotation must be 0, 90, 180, or 270")
-
-        self.flip_x = bool(self.settings.get("camera_flip_x", False))
-        self.flip_y = bool(self.settings.get("camera_flip_y", False))
-        self.connect_timeout = float(
-            self.settings.get("camera_connect_timeout", 2.0)
-        )
-        self.read_timeout = float(self.settings.get("camera_read_timeout", 5.0))
-        self.max_bytes = int(self.settings.get("camera_max_frame_bytes", 8388608))
-        self.warmup_frames = int(self.settings.get("camera_warmup_frames", 0))
-        self.requested_width = int(self.settings.get("camera_width", 0))
-        self.requested_height = int(self.settings.get("camera_height", 0))
-        self.requested_fps = float(self.settings.get("camera_fps", 0))
-
-        if self.connect_timeout <= 0 or self.read_timeout <= 0:
-            raise CameraError("camera timeouts must be positive")
-        if self.max_bytes < 65536:
-            raise CameraError("camera_max_frame_bytes is too small")
-        if self.warmup_frames < 0:
-            raise CameraError("camera_warmup_frames cannot be negative")
-        if (
-            self.requested_width < 0
-            or self.requested_height < 0
-            or self.requested_fps < 0
-        ):
-            raise CameraError("requested camera dimensions and FPS cannot be negative")
-
-        self._session = requests.Session()
-        self._capture = None
-        self._lock = threading.Lock()
+    def __init__(self, descriptor, timeout=5.0, max_bytes=12 * 1024 * 1024):
+        self.descriptor = dict(descriptor)
+        self.source = self.descriptor["source"]
+        self.timeout = float(timeout)
+        self.max_bytes = int(max_bytes)
+        self.capture_device = None
 
     def close(self):
-        with self._lock:
-            if self._capture is not None:
-                self._capture.release()
-                self._capture = None
-            self._session.close()
+        if self.capture_device is not None:
+            self.capture_device.release()
+            self.capture_device = None
 
     def capture(self):
-        """Return one transformed BGR frame at the camera's native size."""
-        with self._lock:
-            frame = None
-            for _ in range(self.warmup_frames + 1):
-                if self._resolved_mode() == "http":
-                    frame = self._capture_http()
-                else:
-                    frame = self._capture_opencv()
-            if frame is None:
-                raise CameraError("camera returned no frame")
-            return self._transform(frame)
+        if self._is_http_source():
+            frame = self._capture_http()
+        else:
+            frame = self._capture_opencv()
+        return self._apply_metadata(frame)
 
-    def _resolved_mode(self):
-        if self.mode != "auto":
-            return self.mode
-        if self.source.lower().startswith(("http://", "https://")):
-            return "http"
-        return "opencv"
+    def _is_http_source(self):
+        return isinstance(self.source, str) and self.source.lower().startswith(
+            ("http://", "https://")
+        )
 
     def _capture_http(self):
+        request = urllib.request.Request(
+            self.source,
+            headers={
+                "Accept": "image/jpeg,image/png,multipart/x-mixed-replace,*/*",
+                "User-Agent": "ToolVision/3",
+            },
+        )
         try:
-            with self._session.get(
-                self.source,
-                stream=True,
-                timeout=(self.connect_timeout, self.read_timeout),
-            ) as response:
-                response.raise_for_status()
-                payload = bytearray()
-                for chunk in response.iter_content(chunk_size=16384):
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                buffer = bytearray()
+                jpeg = None
+                while len(buffer) <= self.max_bytes:
+                    chunk = response.read(min(65536, self.max_bytes + 1 - len(buffer)))
                     if not chunk:
-                        continue
-                    payload.extend(chunk)
-                    start = payload.find(b"\xff\xd8")
-                    end = payload.find(b"\xff\xd9", max(start + 2, 0))
-                    if start >= 0 and end > start:
-                        encoded = np.frombuffer(
-                            bytes(payload[start : end + 2]), dtype=np.uint8
-                        )
-                        frame = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
-                        if frame is None:
-                            raise CameraError("JPEG frame could not be decoded")
-                        return frame
-                    if len(payload) > self.max_bytes:
-                        raise CameraError(
-                            "camera frame exceeded camera_max_frame_bytes"
-                        )
-        except requests.RequestException as exc:
-            raise CameraError("HTTP camera error: %s" % exc)
-        raise CameraError("HTTP response did not contain a complete JPEG frame")
-
-    def _capture_opencv(self):
-        if self._capture is None or not self._capture.isOpened():
-            source = self.source
-            if source.isdigit():
-                source = int(source)
-            self._capture = cv2.VideoCapture(source)
-            if not self._capture.isOpened():
-                self._capture.release()
-                self._capture = None
-                raise CameraError("OpenCV cannot open camera_source")
-            if self.requested_width > 0:
-                self._capture.set(cv2.CAP_PROP_FRAME_WIDTH, self.requested_width)
-            if self.requested_height > 0:
-                self._capture.set(cv2.CAP_PROP_FRAME_HEIGHT, self.requested_height)
-            if self.requested_fps > 0:
-                self._capture.set(cv2.CAP_PROP_FPS, self.requested_fps)
-
-        ok, frame = self._capture.read()
-        if not ok or frame is None:
-            self._capture.release()
-            self._capture = None
-            time.sleep(0.05)
-            raise CameraError("OpenCV camera read failed")
+                        break
+                    buffer.extend(chunk)
+                    start = buffer.find(b"\xff\xd8")
+                    end = buffer.find(b"\xff\xd9", start + 2) if start >= 0 else -1
+                    if start >= 0 and end >= 0:
+                        jpeg = bytes(buffer[start : end + 2])
+                        break
+                data = jpeg if jpeg is not None else bytes(buffer)
+        except Exception as exc:
+            raise CameraError(
+                "cannot read selected camera '%s' (%s)"
+                % (self.descriptor.get("name", "camera"), type(exc).__name__)
+            )
+        if len(data) > self.max_bytes:
+            raise CameraError("camera frame exceeds the safety byte limit")
+        frame = cv2.imdecode(np.frombuffer(data, dtype=np.uint8), cv2.IMREAD_COLOR)
+        if frame is None:
+            raise CameraError("camera response is not a decodable image")
         return frame
 
-    def _transform(self, frame):
-        if self.rotation == 90:
-            frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
-        elif self.rotation == 180:
-            frame = cv2.rotate(frame, cv2.ROTATE_180)
-        elif self.rotation == 270:
-            frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+    def _capture_opencv(self):
+        source = self.source
+        if isinstance(source, str) and source.strip().isdigit():
+            source = int(source.strip())
+        if self.capture_device is None:
+            self.capture_device = cv2.VideoCapture(source)
+        if not self.capture_device.isOpened():
+            self.close()
+            raise CameraError(
+                "OpenCV cannot open selected camera '%s'"
+                % self.descriptor.get("name", "camera")
+            )
+        ok, frame = self.capture_device.read()
+        if not ok or frame is None:
+            self.close()
+            raise CameraError("OpenCV camera returned no frame")
+        return frame
 
-        if self.flip_x and self.flip_y:
-            frame = cv2.flip(frame, -1)
-        elif self.flip_x:
+    def _apply_metadata(self, frame):
+        if self.descriptor.get("flip_horizontal"):
             frame = cv2.flip(frame, 1)
-        elif self.flip_y:
+        if self.descriptor.get("flip_vertical"):
             frame = cv2.flip(frame, 0)
+        rotation = self.descriptor.get("rotation", 0)
+        if rotation == 90:
+            frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+        elif rotation == 180:
+            frame = cv2.rotate(frame, cv2.ROTATE_180)
+        elif rotation == 270:
+            frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
         return frame

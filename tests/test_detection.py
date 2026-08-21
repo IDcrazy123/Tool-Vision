@@ -3,90 +3,72 @@ import unittest
 import cv2
 import numpy as np
 
-from server.camera import CameraSource
-from server.detection import NozzleDetector
+from server.detection import DetectionError, NozzleDetector
 
 
-class NativeResolutionDetectionTests(unittest.TestCase):
-    @staticmethod
-    def _settings():
-        return {
-            "camera_target_x_ratio": 0.5,
-            "camera_target_y_ratio": 0.5,
-            "camera_roi_x_min": 0.1,
-            "camera_roi_y_min": 0.1,
-            "camera_roi_x_max": 0.9,
-            "camera_roi_y_max": 0.9,
-            "detector_polarity": "dark",
-            "detector_min_area_ratio": 0.0001,
-            "detector_max_area_ratio": 0.02,
-            "detector_min_circularity": 0.6,
-            "detector_min_convexity": 0.6,
-            "detector_min_inertia": 0.6,
-            "detector_min_confidence": 0.2,
-            "detector_sensitivity": 1.0,
-            "detection_stable_frames": 1,
-        }
+class StaticCamera:
+    def __init__(self, frame):
+        self.frame = frame
 
-    def test_detector_uses_actual_1280x720_frame(self):
-        frame = np.full((720, 1280, 3), 255, dtype=np.uint8)
-        cv2.circle(frame, (640, 360), 20, (0, 0, 0), -1)
-        detector = NozzleDetector(self._settings(), lambda *args: None)
-        result, annotated = detector.detect_frame(frame)
-        self.assertIsNotNone(result)
-        self.assertEqual(result["frame_width"], 1280)
-        self.assertEqual(result["frame_height"], 720)
-        self.assertAlmostEqual(result["x"], 640, delta=2)
-        self.assertAlmostEqual(result["y"], 360, delta=2)
-        self.assertEqual(annotated.shape, frame.shape)
+    def capture(self):
+        return self.frame.copy()
 
-    def test_detector_uses_actual_800x600_frame(self):
-        frame = np.full((600, 800, 3), 255, dtype=np.uint8)
-        cv2.circle(frame, (400, 300), 16, (0, 0, 0), -1)
-        detector = NozzleDetector(self._settings(), lambda *args: None)
-        result, annotated = detector.detect_frame(frame)
-        self.assertIsNotNone(result)
-        self.assertEqual((result["frame_width"], result["frame_height"]), (800, 600))
-        self.assertEqual(annotated.shape, frame.shape)
 
-    def test_rotation_swaps_native_dimensions_without_resize(self):
-        source = CameraSource(
-            {"camera_source": "0", "camera_mode": "opencv", "camera_rotation": 90},
-            lambda *args: None,
+def nozzle_frame(width=1280, height=720, center=None, radius=26, blur=0):
+    center = center or (width // 2, height // 2)
+    frame = np.full((height, width, 3), 220, dtype=np.uint8)
+    cv2.circle(frame, center, radius, (25, 25, 25), -1)
+    if blur:
+        frame = cv2.GaussianBlur(frame, (blur, blur), 0)
+    return frame
+
+
+class LearnedDetectionTests(unittest.TestCase):
+    def setUp(self):
+        self.detector = NozzleDetector()
+        self.detector.FRAME_INTERVAL = 0
+
+    def test_setup_learns_native_resolution_and_stable_nozzle(self):
+        result = self.detector.learn(StaticCamera(nozzle_frame()))
+        self.assertEqual(result["profile"]["frame_width"], 1280)
+        self.assertEqual(result["profile"]["frame_height"], 720)
+        self.assertAlmostEqual(result["observation"]["x"], 640, delta=1)
+        self.assertAlmostEqual(result["observation"]["y"], 360, delta=1)
+        self.assertLessEqual(result["observation"]["stability_px"], 1.5)
+        self.assertIn("sharpness", result["observation"])
+        self.assertNotIn("focus_ok", result["observation"])
+
+    def test_profile_tracks_shifted_nozzle_during_calibration(self):
+        self.detector.learn(StaticCamera(nozzle_frame()))
+        observation = self.detector.detect_stable(
+            StaticCamera(nozzle_frame(center=(670, 340))), timeout=1
         )
-        frame = np.zeros((600, 800, 3), dtype=np.uint8)
-        transformed = source._transform(frame)
-        self.assertEqual(transformed.shape, (800, 600, 3))
-        source.close()
+        self.assertAlmostEqual(observation["x"], 670, delta=1)
+        self.assertAlmostEqual(observation["y"], 340, delta=1)
 
-    def test_focus_score_rejects_a_blurred_reference_nozzle(self):
-        sharp = np.full((600, 800, 3), 255, dtype=np.uint8)
-        cv2.circle(sharp, (400, 300), 28, (0, 0, 0), -1)
-        blurry = cv2.GaussianBlur(sharp, (0, 0), 4.0)
-        detector = NozzleDetector(self._settings(), lambda *args: None)
+    def test_resolution_change_requires_setup_again(self):
+        self.detector.learn(StaticCamera(nozzle_frame()))
+        with self.assertRaisesRegex(DetectionError, "resolution changed"):
+            self.detector.detect_stable(
+                StaticCamera(nozzle_frame(800, 600)), timeout=0.1
+            )
 
-        sharp_result, _ = detector.detect_frame(sharp)
-        blurry_result, _ = detector.detect_frame(blurry)
-
-        self.assertIsNotNone(sharp_result)
-        self.assertIsNotNone(blurry_result)
-        self.assertTrue(sharp_result["focus_ok"])
-        self.assertGreater(
-            sharp_result["focus_score"], blurry_result["focus_score"] * 5
+    def test_sharpness_is_relative_not_a_hardware_rejection_threshold(self):
+        self.detector.learn(StaticCamera(nozzle_frame()))
+        sharp = self.detector.detect_stable(StaticCamera(nozzle_frame()), timeout=1)
+        blurred = self.detector.detect_stable(
+            StaticCamera(nozzle_frame(blur=15)), timeout=1
         )
-        self.assertFalse(blurry_result["focus_ok"])
+        self.assertGreater(sharp["sharpness"], blurred["sharpness"])
+        self.assertEqual(
+            blurred["sharpness_note"],
+            "relative metric; stable detection is the acceptance gate",
+        )
 
-    def test_learned_profile_brackets_the_taught_nozzle_area(self):
-        frame = np.full((720, 1280, 3), 255, dtype=np.uint8)
-        cv2.circle(frame, (640, 360), 24, (0, 0, 0), -1)
-        detector = NozzleDetector(self._settings(), lambda *args: None)
-        observation, _ = detector.detect_frame(frame)
-
-        learned = detector.recommended_settings(observation)
-        area_ratio = observation["area_px"] / (1280.0 * 720.0)
-        self.assertLess(learned["detector_min_area_ratio"], area_ratio)
-        self.assertGreater(learned["detector_max_area_ratio"], area_ratio)
-        self.assertEqual(learned["detector_polarity"], "dark")
+    def test_blank_frame_does_not_teach_a_profile(self):
+        blank = np.full((480, 640, 3), 127, dtype=np.uint8)
+        with self.assertRaises(DetectionError):
+            self.detector.learn(StaticCamera(blank))
 
 
 if __name__ == "__main__":

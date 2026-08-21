@@ -5,15 +5,19 @@ INSTALL_USER="${TOOL_VISION_USER:-${SUDO_USER:-$(id -un)}}"
 USER_HOME="$(getent passwd "${INSTALL_USER}" | cut -d: -f6)"
 KLIPPER_DIR="${KLIPPER_DIR:-${USER_HOME}/klipper}"
 VENV_DIR="${TOOL_VISION_VENV:-${USER_HOME}/tool-vision-env}"
-KLIPPER_TARGET="${KLIPPER_DIR}/klippy/extras/tool_vision.py"
+KLIPPER_EXTRAS="${KLIPPER_DIR}/klippy/extras"
 
 sudo systemctl disable --now tool-vision.service 2>/dev/null || true
 sudo rm -f -- /etc/systemd/system/tool-vision.service
 sudo systemctl daemon-reload
 
-if [[ -L "${KLIPPER_TARGET}" ]]; then
-    rm -f -- "${KLIPPER_TARGET}"
-fi
+for klipper_file in tool_vision.py tool_vision_client.py tool_vision_state.py \
+    tool_vision_toolchanger.py; do
+    KLIPPER_TARGET="${KLIPPER_EXTRAS}/${klipper_file}"
+    if [[ -L "${KLIPPER_TARGET}" ]]; then
+        rm -f -- "${KLIPPER_TARGET}"
+    fi
+done
 
 if [[ "${1:-}" == "--purge-venv" && -d "${VENV_DIR}" ]]; then
     case "${VENV_DIR}" in

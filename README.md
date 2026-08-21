@@ -1,38 +1,61 @@
-# Tool Vision 2.1
+# ToolVision 3
 
-Tool Vision measures relative **X, Y, and Z tool offsets** on Klipper
-toolchanger printers by combining an upward-facing nozzle camera with a fixed
-microswitch.
+ToolVision tự động đo **X/Y/Z offset tương đối** giữa các đầu in trên máy
+Klipper nhiều tool. Bản 3 được viết lại theo workflow của
+[kTAMV](https://github.com/TypQxQ/kTAMV) cho camera XY và
+[Axiscope](https://github.com/nic335/Axiscope) cho công tắc Z, nhưng không yêu
+cầu người dùng khai báo trước vị trí fixture hoặc hàng loạt tham số OpenCV.
 
-The project keeps the strongest ideas from kTAMV and Axiscope while removing
-their hardware assumptions:
+Workflow bình thường chỉ còn bốn nút/lệnh:
 
-- kTAMV-style multi-strategy image processing, multi-frame stability checks,
-  radial pixel-to-motion calibration, and iterative nozzle centering.
-- Axiscope-style `PrinterProbeMultiAxis` switch probing, dynamic tool lists,
-  reference-tool deltas, and configurable G-code workflow hooks.
-- Teach-once setup: jog T0 over each randomly placed station and run one command;
-  positions and verified image settings persist across Klipper restarts.
-- Automatic nozzle detector training and a resolution-independent focus check.
-- Native camera frames: no 640x480 constant and no forced resize.
-- Resolution-relative target, ROI, and blob-area settings.
-- Safe station travel: Z is lifted before every XY move to the camera or switch.
-- Report-only output by default; production tool configs are never rewritten.
+1. đưa T0 đến gần tâm camera → `TV_SETUP_CAMERA`;
+2. đưa T0 lên trên switch → `TV_SETUP_SWITCH`;
+3. chạy `TV_CALIBRATE MODE=XYZ`;
+4. xem lại bằng `TV_REPORT`.
 
-## Scope and safety
+Kết quả mặc định là **report-only**. ToolVision không âm thầm sửa offset đang
+dùng, không gọi `SET_TOOL_PARAMETER`, `SAVE_TOOL_PARAMETER` hoặc `SAVE_CONFIG`.
 
-Tool Vision is a measurement system, not a first-layer compensation model.
-A switch can produce repeatable mechanical deltas that still differ from the
-best printing offsets because of switch force, nozzle temperature, bed
-temperature, frame expansion, and measurement location. Validate every result
-with a controlled first-layer print before applying it.
+## Điều gì được tự động hóa?
 
-Tool Vision ships disabled by design. Do not enable automatic movement on a
-production printer until the camera and switch stations have been taught. If
-`[axiscope]` or `[tools_calibrate]` is already active, disable it before enabling
-`[tool_vision]`.
+- Vị trí camera và switch được học từ vị trí hiện tại của T0 rồi lưu nguyên tử.
+- Camera được tự dò từ [Moonraker webcam API](https://moonraker.readthedocs.io/en/latest/external_api/webcams/).
+- Flip/rotation của camera do Moonraker quản lý được áp dụng tự động.
+- Tool được đọc động từ toolchanger; không cần danh sách `tool_numbers`.
+- Detector thử nhiều chiến lược dark/light, adaptive/Otsu/edge, chọn kết quả ổn
+  định gần tâm và học hình học vòi in từ ảnh thật.
+- Ảnh giữ nguyên độ phân giải; không resize cố định 640×480.
+- Pixel/mm được fit tự động từ đúng chu trình mười điểm bán kính 0,5 mm của
+  kTAMV, có loại điểm ngoại lai và kiểm tra ma trận.
+- Z dùng năm mẫu, median, tolerance 0,05 mm và hai lần retry theo khuyến nghị
+  hiện tại của [klipper-toolchanger tools_calibrate](https://github.com/viesturz/klipper-toolchanger/blob/main/tools_calibrate.md).
+- ToolVision nâng Z trước khi đi XY, kiểm tra homed/printing/giới hạn động học và
+  kiểm tra switch đang mở trước khi probe.
 
-Never configure more than one of these sections at the same time:
+Độ nét được báo dưới dạng chỉ số tương đối, không còn ngưỡng tuyệt đối kiểu
+`focus > 0.006`. Nghiên cứu về focus operators cho thấy kết quả phụ thuộc noise,
+contrast, saturation và kích thước cửa sổ
+([Pertuz, Puig & Garcia, 2013](https://doi.org/10.1016/j.patcog.2012.11.011)).
+Vì vậy tiêu chí “ảnh dùng được” của ToolVision là: vòi được nhận diện ổn định
+qua nhiều frame **và** phép biến đổi chuyển động vượt kiểm tra sai số.
+
+## Phạm vi an toàn
+
+ToolVision không thể suy ra mọi kẹp, giá đỡ hay vật cản chỉ từ một camera hướng
+lên. Người vận hành vẫn phải bảo đảm đường nâng Z thẳng đứng an toàn. Nếu fixture
+cần khoảng hở lớn hơn mặc định 5 mm, truyền một lần khi setup:
+
+```gcode
+TV_SETUP_CAMERA SAFE_Z=25
+TV_SETUP_SWITCH SAFE_Z=25
+```
+
+Nozzle phải sạch. Offset cơ khí đo trên switch có thể khác offset in tối ưu do
+lực switch, nhựa bám, nhiệt độ nozzle/bed và giãn nở khung. Luôn đo lặp lại và
+xác nhận bằng bản in alignment/first-layer trước khi áp dụng.
+
+Không bật đồng thời các section sau vì chúng cùng có thể cấp phát
+`probe_multi_axis`:
 
 ```ini
 [tool_vision]
@@ -40,335 +63,252 @@ Never configure more than one of these sections at the same time:
 [tools_calibrate]
 ```
 
-All three can allocate the same `probe_multi_axis` resource.
+ToolVision cần file Python `tools_calibrate.py` từ klipper-toolchanger, nhưng
+section `[tools_calibrate]` phải để tắt.
 
-## Architecture
+## Cấu hình tối thiểu
 
-```text
-Tool-Vision/
-├── Axiscope/                      Pinned reference submodule; not installed
-├── kTAMV/                         Pinned reference submodule; not installed
-├── klippy/extras/tool_vision.py   Klipper motion and XYZ orchestration
-├── server/
-│   ├── app.py                     Versioned HTTP API and single-job worker
-│   ├── camera.py                  HTTP/OpenCV native-frame acquisition
-│   ├── detection.py               Multi-strategy stable nozzle detection
-│   ├── transform.py               Affine/quadratic pixel-motion fit
-│   ├── requirements.txt           Host-only Python dependencies
-│   └── tool-vision.service.in     Installer-populated systemd template
-├── tests/                         Host-side deterministic tests
-├── tool_vision.cfg                Portable Klipper configuration example
-├── install.sh                     No-clone bootstrap and runtime installer
-└── uninstall.sh                   Service and symlink removal
+File [`tool_vision.cfg`](tool_vision.cfg) mặc định không cần giá trị camera:
+
+```ini
+[tool_vision]
+# pin: ^PF2   # chỉ mở khi cần đo Z, thay bằng pin thật
 ```
 
-OpenCV and NumPy run in an isolated host service. Klipper uses only Python's
-standard library to exchange short JSON messages, so the Klipper environment
-does not need computer-vision packages.
+Nếu Moonraker chỉ có một webcam enabled, ToolVision dùng webcam đó. Nếu có nhiều
+camera, nó chỉ tự chọn khi đúng một camera có tên/vị trí chứa từ khóa nozzle,
+tool, align, kTAMV hoặc ToolVision. Trường hợp còn mơ hồ sẽ dừng và liệt kê tên,
+không chọn đại theo thứ tự. Khi đó chỉ cần thêm:
 
-## Reference repositories
+```ini
+camera_name: nozzle
+```
 
-Axiscope and kTAMV are pinned Git submodules for design comparison and
-provenance. They retain their own histories and licenses, and neither directory
-is imported or installed by Tool Vision.
+Camera chưa đăng ký với Moonraker mới cần nguồn trực tiếp:
 
-Clone the complete development tree with:
+```ini
+camera_source: http://127.0.0.1:8080/?action=snapshot
+# Hoặc MJPEG/RTSP, /dev/video0, hay OpenCV index 0
+```
+
+`pin` là thông tin phần mềm không thể tự đoán. Dùng cú pháp invert/pull-up chuẩn
+của Klipper và kiểm tra điện bằng lệnh chính thức `QUERY_ENDSTOPS` trước lần
+probe đầu tiên.
+
+## Cài đặt
+
+Yêu cầu:
+
+- Klipper + Moonraker;
+- [klipper-toolchanger](https://github.com/viesturz/klipper-toolchanger) bản có
+  `tools_calibrate.py`;
+- camera hướng lên cho XY; switch tiếp xúc cho Z là tùy chọn.
+
+Trên máy Klipper:
 
 ```bash
 git clone --recurse-submodules https://github.com/IDcrazy123/Tool-Vision.git
 cd Tool-Vision
-```
-
-For an existing clone, retrieve the reference trees with:
-
-```bash
-git submodule update --init --recursive
-```
-
-The submodules are development references kept on the PC. They are never
-downloaded or copied into the printer runtime.
-
-### Logic adopted from the reference projects
-
-kTAMV established the useful interaction pattern of centering a nozzle and
-capturing the current toolhead position as the measurement origin. Its original
-state is runtime-only and its image math assumes 640x480. Axiscope added
-multi-axis switch probing and a command that can take the current switch
-position, but those live values are also not a complete persistent setup.
-
-Tool Vision combines those workflows without copying their hardware
-assumptions: `TV_SETUP_CAMERA` learns the current position, detector profile,
-focus quality, and native-resolution transform; `TV_SETUP_ZSWITCH` probes from
-the current position and learns the verified approach and trigger. Both are
-written atomically to `tool_vision_state.json` and loaded after restart.
-
-## Camera compatibility
-
-`camera_source` supports:
-
-- Crowsnest MJPEG stream or snapshot URLs.
-- Other HTTP JPEG/MJPEG camera servers.
-- RTSP streams through OpenCV.
-- V4L2 paths such as `/dev/video0`.
-- OpenCV numeric camera indexes such as `0`.
-
-With `camera_mode: auto`, HTTP/HTTPS uses the HTTP JPEG reader and every other
-source uses OpenCV. `camera_width`, `camera_height`, and `camera_fps` default to
-`0`, which means the device/native default. They are optional requests for
-direct OpenCV devices; they are not processing dimensions.
-
-After optional rotation and flipping, the detector reads the actual
-`frame.shape`. The model stores that frame size and forces recalibration if it
-changes.
-
-## Detection model
-
-Each frame is processed through dark/light adaptive and Otsu masks. Strict and
-relaxed contour profiles filter candidates by:
-
-- area as a ratio of the full native frame;
-- circularity;
-- convexity;
-- inertia/aspect ratio;
-- distance to the configured target.
-
-The detector accepts a position only after consecutive samples cluster within
-the active tolerance. Results include
-the native frame size, confidence, chosen strategy, diameter, and X/Y sample
-standard deviation.
-
-During `TV_SETUP_CAMERA`, a permissive detector first finds the reference
-nozzle. Tool Vision then derives and verifies a hardware-specific profile for:
-
-- dark or light nozzle polarity;
-- native-frame area range and contour shape limits;
-- adaptive threshold block size and blur size;
-- stability tolerance and confidence limit;
-- a broad center ROI that still contains calibration movement.
-
-Focus is scored around the detected nozzle after a small denoise pass and is
-normalized by local contrast. A blurry image stops setup before any learned
-state is saved. Physically focus the camera and rerun the same command. Manual
-detector parameters remain supported through `detector_mode: manual`, but are
-an advanced fallback rather than normal installation work.
-
-## Camera calibration model
-
-The reference tool moves through a configurable radial pattern. Each sample
-contains a measured machine delta and observed pixel delta. The service fits:
-
-```text
-machine_delta = transform(pixel_delta)
-```
-
-`affine` is recommended. `quadratic` is available for visibly distorted optics
-and requires at least eight useful points. Calibration is rejected when the
-design matrix is rank-deficient, ill-conditioned, or exceeds
-`camera_max_rms_error`.
-
-Unlike the legacy implementation, there is no fixed image size or hard-coded
-damping in the fitted matrix. Safe centering defaults live in the extension;
-advanced overrides remain available without cluttering the example config.
-
-## Installation without cloning on the printer
-
-The printer does not need Git or a repository checkout. Download and run the
-bootstrap script on the Klipper host:
-
-```bash
-curl -fsSL \
-  https://raw.githubusercontent.com/IDcrazy123/Tool-Vision/main/install.sh \
-  -o /tmp/tool-vision-install.sh
-bash /tmp/tool-vision-install.sh
-```
-
-The script downloads a temporary source archive, copies only the required
-runtime files into `~/printer_data/tool-vision`, and removes the temporary
-archive when it exits. Tests, documentation, Axiscope, kTAMV, and Git metadata
-are not installed on the printer. Only the editable
-`~/printer_data/config/Tool-Vision/tool_vision.cfg` is exposed in Mainsail.
-
-An extracted local source bundle can also be transferred to the Pi and run
-offline with `./install.sh`; the persisted runtime is the same and the source
-bundle can be removed afterward.
-
-The installer discovers the actual login user, home directory, Klipper path,
-and virtual-environment path. Override when needed:
-
-```bash
-KLIPPER_DIR=/opt/klipper \
-TOOL_VISION_RUNTIME_DIR=/opt/tool-vision \
-TOOL_VISION_CONFIG_DIR=/opt/printer_data/config \
-TOOL_VISION_VENV=/opt/tool-vision-env \
-TOOL_VISION_HOST=127.0.0.1 \
-TOOL_VISION_PORT=8085 \
 ./install.sh
 ```
 
-It installs an isolated venv, links the Klipper extension to the persisted
-runtime, generates a systemd unit from the real paths, replaces the legacy
-`tool_vision.service`, and restarts Klipper. Existing `tool_vision.cfg` values
-are preserved and `printer.cfg` is never edited automatically.
+Installer tạo runtime độc lập ở `~/printer_data/tool-vision`, venv riêng, service
+`tool-vision.service`, bốn symlink extension và file cấu hình có thể sửa trong
+`~/printer_data/config/Tool-Vision/`. Nó không sửa `printer.cfg`.
 
-On upgrade, a previously customized `.cfg` is intentionally not replaced. The
-new learned state takes precedence when `station_mode: auto` and
-`detector_mode: auto` (both defaults), so old coordinate/detector lines can be
-removed after setup is verified. Back up the old file before replacing it with
-the minimal current example if the new macro-panel buttons are also desired.
-
-## Minimal hardware configuration
-
-The normal `tool_vision.cfg` contains only:
+Thêm include rồi restart:
 
 ```ini
-[tool_vision]
-camera_source: http://127.0.0.1:8080/?action=stream
-# pin: ^your_real_switch_pin   # enable only when using Z measurement
+[include Tool-Vision/tool_vision.cfg]
 ```
-
-Camera-only XY calibration needs no switch pin. For Z, set the real pin and
-verify its polarity with `QUERY_ENDSTOPS` before any probing. Tool numbers,
-reference T0, movement calibration, detector thresholds, and station
-coordinates use safe defaults or are discovered/taught automatically.
-
-The same file also provides four Mainsail/Fluidd macro-panel buttons:
-`TOOL_VISION_STATUS`, `TOOL_VISION_SETUP_CAMERA`,
-`TOOL_VISION_SETUP_ZSWITCH`, and `TOOL_VISION_CALIBRATE_ALL`. They expose the
-normal 1/2/3 workflow without requiring users to remember command parameters;
-the lower-level `TV_*` commands remain available for advanced use.
-
-## Enable on Klipper
-
-First disable any active `[axiscope]` section and keep `[tools_calibrate]`
-disabled. Then include the configured file from a location deployed on the
-printer:
-
-```ini
-[include path/to/tool_vision.cfg]
-```
-
-Run `FIRMWARE_RESTART`, home XYZ, select T0, and verify:
 
 ```gcode
+FIRMWARE_RESTART
 TV_STATUS
 ```
 
-The processed frame is available locally at:
+Khi nâng từ ToolVision 2, installer sao lưu cấu hình mẫu cũ với hậu tố
+`.pre-v3-<timestamp>` trước khi đặt file tối giản mới. State schema 1 không được
+đọc như schema 2; hãy setup lại hai station để tránh dùng nhầm dữ liệu cũ.
 
-```text
-http://127.0.0.1:8085/api/v1/frame
-```
+## Setup một lần
 
-Bind the service to `0.0.0.0` only when LAN access is required and protected by
-the local network/firewall.
+### 1. Camera XY
 
-## Two-command setup
-
-### 1. Teach the camera
-
-With clean T0 active, jog the nozzle over the upward camera and adjust Z/physical
-focus until the image looks sharp. Then run:
+1. Home XYZ, gắn T0 và làm sạch nozzle.
+2. Jog T0 đến gần tâm ảnh camera; chỉnh Z/focus vật lý để vòi tương đối rõ.
+3. Bảo đảm có khoảng trống cho chuyển động 0,5 mm quanh điểm hiện tại.
+4. Chạy:
 
 ```gcode
 TV_SETUP_CAMERA
 ```
 
-The command checks focus, learns and verifies the detector, calibrates
-pixel-to-machine movement, centers T0, and persists the final XYZ station. If
-the fixture is taller than the default 5 mm clearance, specify a known safe
-height once, for example `TV_SETUP_CAMERA SAFE_Z=20`.
+Một lệnh này sẽ:
 
-Camera setup makes a local radial movement of 0.6 mm around the taught point.
-Ensure the nozzle is visible with enough frame and physical clearance for that
-movement before running the command.
+- tìm hoặc mở camera;
+- học detector ở độ phân giải thật;
+- yêu cầu ba detection liên tiếp ổn định;
+- chạy mười vị trí calibration kTAMV;
+- yêu cầu tối thiểu 8/10 điểm hợp lệ;
+- fit ma trận 2D, loại điểm sai vượt 20%, kiểm tra rank/condition/residual;
+- tự center T0 rồi lưu XYZ camera, safe Z, detector và transform.
 
-### 2. Teach the switch
+### 2. Switch Z
 
-With T0 active, jog the nozzle directly above the switch and close enough that
-the configured `probe_max_distance` can reach it. Then run:
+1. Khai báo `pin`, restart và kiểm tra trạng thái bằng `QUERY_ENDSTOPS`.
+2. Với T0 đang gắn, jog nozzle thẳng trên switch, cách điểm trigger dưới 10 mm.
+3. Chạy:
 
 ```gcode
-TV_SETUP_ZSWITCH
+TV_SETUP_SWITCH
 ```
 
-The command performs a short multi-sample probe, verifies downward travel, and
-persists X/Y, approach Z, trigger Z, and safe Z. Use `SAFE_Z=...` here too when
-the default clearance cannot clear surrounding fixtures.
+ToolVision xác nhận switch chưa trigger, probe nhiều mẫu, quay lại approach Z và
+lưu vị trí/trigger chuẩn của T0. Không cần nhập X/Y/Z switch trong `.cfg`.
 
-Software cannot see every printed bracket or obstruction. On the first run,
-use `TV_MOVE_TO_CAMERA` and `TV_MOVE_TO_ZSWITCH` separately and confirm that Z
-lifts before XY travel. Then measure T0 twice, one non-reference tool, and only
-after repeatability is confirmed run `TV_CALIBRATE_ALL MODE=XYZ`.
+## Đo tất cả tool
 
-## G-code commands
+```gcode
+TV_CALIBRATE MODE=XYZ
+```
 
-| Command | Purpose |
-|---|---|
-| `TV_STATUS` | Klipper/server status and last error |
-| `TV_SERVER_CONFIGURE` | Send current `.cfg` camera/detector values |
-| `TV_CAMERA_CHECK` | Detect and report confidence/focus without motion |
-| `TV_SETUP_CAMERA [SAFE_Z=n]` | Teach, focus-check, auto-tune, calibrate, and persist camera station |
-| `TV_SETUP_ZSWITCH [SAFE_Z=n]` | Probe, verify, and persist switch station |
-| `TV_MOVE_TO_CAMERA` | Safe move to the camera station |
-| `TV_MOVE_TO_ZSWITCH` | Safe move to the switch approach point |
-| `TV_CALIBRATE_CAMERA [TOOL=0]` | Fit pixel-to-machine movement |
-| `TV_MEASURE_XY TOOL=n [REFERENCE=1]` | Center and measure XY |
-| `TV_MEASURE_Z TOOL=n [REFERENCE=1]` | Probe and measure Z |
-| `TV_CALIBRATE_ALL MODE=XYZ` | Measure all configured tools |
-| `TV_REPORT` | Reprint the current report |
+Hoặc chỉ đo một hệ:
 
-`MODE` may be `XYZ`, `XY`, or `Z`. Tool discovery uses
-`printer.toolchanger.tool_numbers` unless `tool_numbers` is explicitly set.
+```gcode
+TV_CALIBRATE MODE=XY
+TV_CALIBRATE MODE=Z
+```
 
-## Results and applying offsets
+ToolVision tự chọn các tool đã đăng ký. Với mỗi tool, camera closed-loop đưa
+nozzle về cùng tâm ảnh; switch đo trigger Z tại cùng fixture. Nếu XY vừa được đo,
+kết quả đó cũng được dùng để đưa nozzle chính xác hơn lên switch.
 
-Results are written atomically to `result_file`, separate from all Klipper
-configuration files. The console prints measured values and suggested
-`SET_TOOL_PARAMETER` commands. Tool Vision never executes those commands and
-never calls `SAVE_TOOL_PARAMETER` or `SAVE_CONFIG`.
+Quy ước dấu được cố định và có test regression:
 
-Learned hardware setup is stored separately in
-`~/printer_data/config/tool_vision_state.json`. Delete that file to discard all
-learned setup, or use `station_mode: manual` / `detector_mode: manual` to keep a
-legacy advanced configuration authoritative. Neither state nor results modify
-production tool offsets.
+```text
+XY[n] = raw_center_position[n] - raw_center_position[T0]
+ Z[n] = raw_trigger_z[n]       - raw_trigger_z[T0]
+```
 
-Before applying anything:
+Đây là hướng dấu của kTAMV/current toolchanger camera-align cho XY và Axiscope
+cho Z. Xem đặc tả kỹ thuật tại [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
-- repeat the measurement at least three times;
-- compare spread and confidence;
-- keep the production offset backup;
-- validate XY with a multi-tool alignment print;
-- validate Z with a controlled first-layer test at real print temperatures.
+Kết quả được lưu ở:
 
-## Service diagnostics
+```text
+~/printer_data/config/tool_vision_results.json
+```
+
+State học một lần được lưu riêng ở:
+
+```text
+~/printer_data/config/tool_vision_state.json
+```
+
+Hãy chạy ít nhất ba lần, so sánh độ lặp và backup offset hiện tại trước khi áp
+dụng thủ công. Nếu reference tool không phải baseline zero, kết quả vẫn là
+**tương đối với reference**, không phải giá trị tuyệt đối để chép mù quáng.
+
+## Lệnh và giao diện
+
+| Nút/lệnh ngắn | Lệnh lõi | Công dụng |
+|---|---|---|
+| `TV_STATUS` | `TOOL_VISION_STATUS` | trạng thái setup/service/lỗi cuối |
+| `TV_SETUP_CAMERA` | `TOOL_VISION_SETUP_CAMERA` | học camera tại T0 hiện tại |
+| `TV_SETUP_SWITCH` | `TOOL_VISION_SETUP_SWITCH` | học switch tại T0 hiện tại |
+| `TV_CALIBRATE` | `TOOL_VISION_CALIBRATE` | đo tất cả tool, `MODE=XYZ/XY/Z` |
+| `TV_REPORT` | `TOOL_VISION_REPORT` | in lại kết quả của session |
+
+Các macro này hiện thành nút trong Mainsail/Fluidd. Người dùng bình thường không
+cần gọi API hay chỉnh tham số detector.
+
+Ảnh chẩn đoán mới nhất:
+
+```text
+http://127.0.0.1:8085/api/v2/frame
+```
+
+## Chẩn đoán
 
 ```bash
 systemctl status tool-vision.service
 journalctl -u tool-vision.service -n 100 --no-pager
-curl http://127.0.0.1:8085/api/v1/health
+curl http://127.0.0.1:8085/api/v2/health
 ```
 
-The JSON health response reports whether the server is configured, whether a
-job is active, the last native frame size, and transform quality.
+Các lỗi có chủ đích:
 
-## Uninstall
+- `camera discovery is ambiguous`: đặt `camera_name` hoặc `camera_source`;
+- `resolution changed`: camera đổi độ phân giải, chạy lại setup camera;
+- `switch is already triggered`: nâng nozzle, kiểm tra dây/polarity;
+- `< 8/10 points`: làm sạch nozzle, chỉnh focus/ánh sáng rồi setup lại;
+- `correction exceeded 2 mm`: đưa nozzle gần tâm hơn trước setup/đo;
+- `probe_multi_axis conflict`: tắt `[axiscope]` và `[tools_calibrate]`.
+
+## Kiến trúc và kiểm thử
+
+```text
+Klipper                              Host service
+klippy/extras/tool_vision.py         server/app.py
+  motion + probe + orchestration       API + one-job queue
+tool_vision_toolchanger.py           server/camera.py
+  API compatibility                    Moonraker discovery/capture
+tool_vision_state.py                 server/detection.py
+  schema + atomic JSON                 learned native detector
+tool_vision_client.py                server/transform.py
+  short request + reactor polling      robust pixel→machine fit
+```
+
+OpenCV/NumPy không chạy trong process Klipper. Host chỉ trả quan sát; nó không
+được quyền ra lệnh chuyển động. Chạy test trên máy phát triển:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+Các test bao phủ camera discovery mơ hồ, URL Moonraker port 80, MJPEG/native
+frame, profile detection, focus tương đối, thay đổi resolution, 10-point fit và
+outlier, dấu XYZ, motion lift-first, adapter toolchanger cũ/mới, state atomic,
+API v2 và contract installer/config.
+
+## Nguồn logic và điểm cải thiện
+
+- [kTAMV](https://github.com/TypQxQ/kTAMV): nhiều kiểu preprocessing, detection
+  ổn định, pattern mười điểm 0,5 mm, yêu cầu ít nhất 75% điểm và centering. Bản
+  mới bỏ giả định resize 640×480, lưu profile/transform sau restart và thêm kiểm
+  tra ambiguity/rank/condition/residual.
+- [Axiscope](https://github.com/nic335/Axiscope): dùng
+  `PrinterProbeMultiAxis`, trigger delta theo T0 và ý tưởng lấy vị trí switch hiện
+  tại. Bản mới lưu vị trí nguyên tử, kiểm tra switch mở và hỗ trợ API toolchanger
+  hiện tại.
+- [klipper-toolchanger tools_calibrate](https://github.com/viesturz/klipper-toolchanger/blob/main/tools_calibrate.md):
+  nguồn probe primitive, sampling và clean-nozzle guidance.
+- [klipper-toolchanger camera-align example](https://github.com/viesturz/klipper-toolchanger/blob/main/examples/camera-tool-align.cfg):
+  đối chiếu hướng dấu XY với API transform mới.
+- [Moonraker Webcam Management](https://moonraker.readthedocs.io/en/latest/external_api/webcams/):
+  nguồn chính thức cho auto-discovery, URL, flip và rotation metadata.
+- [Klipper G-Codes](https://www.klipper3d.org/G-Codes.html): nguồn chính thức cho
+  `QUERY_ENDSTOPS`, lưu/phục hồi trạng thái G-code và hành vi console.
+
+Hai submodule Axiscope/kTAMV chỉ là nguồn tham chiếu phát triển, không được copy
+vào runtime printer.
+
+## English quick start
+
+ToolVision 3 measures relative XYZ offsets on multi-tool Klipper printers. The
+normal configuration is empty for camera-only XY and needs only `pin` for Z.
+Home XYZ, mount T0, jog it near the upward camera center and run
+`TV_SETUP_CAMERA`; jog T0 above the contact switch and run `TV_SETUP_SWITCH`;
+then run `TV_CALIBRATE MODE=XYZ`. Camera metadata is discovered from Moonraker.
+If several webcams are ambiguous, set `camera_name`. Results are report-only and
+must be repeat-tested before manual application.
+
+## Gỡ cài đặt
 
 ```bash
 ./uninstall.sh
 ```
 
-This removes the service and Klipper symlink. It preserves the project, venv,
-learned setup state, measurement results, and any installer-created backup. Use
-`./uninstall.sh --purge-venv` only when the isolated environment should also be
-removed.
-
-## Credits
-
-- [kTAMV](https://github.com/TypQxQ/kTAMV) by TypQxQ for the original camera
-  calibration, multi-strategy detection, stability, and centering concepts.
-- [Axiscope](https://github.com/nic335/Axiscope) / N3MI-DG for the original
-  camera alignment workflow and multi-axis Z-switch integration.
-
-Tool Vision 2 is a new implementation adapted for configurable hardware,
-native camera resolutions, explicit quality metrics, and safer Klipper motion.
+Service và bốn symlink được gỡ; state, result, config và backup được giữ lại.
+Thêm `--purge-venv` chỉ khi muốn xóa cả môi trường Python riêng.

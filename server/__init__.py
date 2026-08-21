@@ -1,3 +1,3 @@
-"""Tool Vision host-side vision service."""
+"""ToolVision host-side camera service."""
 
-__version__ = "2.1.0"
+__version__ = "3.0.0"
