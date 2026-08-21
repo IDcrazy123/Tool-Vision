@@ -62,6 +62,7 @@ class RewriteContracts(unittest.TestCase):
         ):
             self.assertIn(module, installer)
         self.assertIn("/api/v2/health", installer)
+        self.assertIn('systemctl restart "${SERVICE_NAME}"', installer)
         self.assertNotIn("git clone", installer)
 
     def test_systemd_arguments_match_app_parser(self):

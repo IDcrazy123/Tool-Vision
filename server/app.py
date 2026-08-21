@@ -24,7 +24,7 @@ try:
     from .detection import DetectionError, NozzleDetector
     from .transform import TransformError, TransformModel
 except ImportError:  # pragma: no cover - direct script execution
-    VERSION = "3.0.0"
+    VERSION = "3.1.0"
     from camera import CameraError, CameraSource, resolve_camera
     from detection import DetectionError, NozzleDetector
     from transform import TransformError, TransformModel

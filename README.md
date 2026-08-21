@@ -51,8 +51,9 @@ TV_SETUP_SWITCH SAFE_Z=25
 ```
 
 Nozzle phải sạch. Offset cơ khí đo trên switch có thể khác offset in tối ưu do
-lực switch, nhựa bám, nhiệt độ nozzle/bed và giãn nở khung. Luôn đo lặp lại và
-xác nhận bằng bản in alignment/first-layer trước khi áp dụng.
+lực switch, nhựa bám, nhiệt độ nozzle/bed và giãn nở khung. Đặc biệt, không so
+sánh một kết quả đo nguội với một kết quả đo nóng. Luôn đo lặp lại ở cùng nhiệt
+độ và xác nhận bằng bản in alignment/first-layer trước khi áp dụng.
 
 Không bật đồng thời các section sau vì chúng cùng có thể cấp phát
 `probe_multi_axis`:
@@ -180,6 +181,42 @@ TV_CALIBRATE MODE=XY
 TV_CALIBRATE MODE=Z
 ```
 
+### Nhiệt độ khi đo
+
+Lõi Axiscope không ép nhiệt độ, nhưng cấu hình mẫu chính thức của Axiscope dùng
+`M104 T... S150` để làm nóng mọi tool trước chu trình và trả chúng về `S0` khi
+xong. Macro `CALIBRATE_ALL_OFFSETS` cũ của klipper-toolchanger trên máy đối
+chiếu cũng chờ nozzle đạt 150 °C trước khi chạm switch. ToolVision hỗ trợ cùng
+workflow mà không thêm giá trị bắt buộc vào `.cfg`:
+
+```gcode
+TV_CALIBRATE MODE=Z
+```
+
+ToolVision tự dùng 150 °C, đặt target cho tất cả tool trước để chúng nóng song
+song, chờ lại từng tool sau khi pickup bằng `M109`, rồi mới đo. Mọi heater được
+trả về 0 khi kết thúc **hoặc khi calibration phát sinh lỗi**. Người dùng bình
+thường không cần can thiệp vào nhiệt độ.
+
+Khuyến nghị thực tế:
+
+- 150 °C là mốc tương thích với Axiscope mẫu và macro cũ của máy này;
+- nozzle cần sạch trước khi bắt đầu; với `MODE=XY/XYZ`, kiểm tra nhựa rỉ không
+  che hình camera;
+- trường hợp phần cứng/vật liệu đặc biệt mới cần override `TEMP=...`; `TEMP=0`
+  là chế độ đo nguội chủ động.
+
+Máy có brush có thể cấu hình hook chạy đúng sau pickup và sau khi đạt nhiệt:
+
+```ini
+[tool_vision]
+after_select_gcode:
+  CLEAN_NOZZLE TEMP=150
+```
+
+Hook là tùy chọn vì ToolVision không thể tự suy ra vị trí/hành trình brush an
+toàn trên phần cứng bất kỳ.
+
 ToolVision tự chọn các tool đã đăng ký. Với mỗi tool, camera closed-loop đưa
 nozzle về cùng tâm ảnh; switch đo trigger Z tại cùng fixture. Nếu XY vừa được đo,
 kết quả đó cũng được dùng để đưa nozzle chính xác hơn lên switch.
@@ -217,7 +254,7 @@ dụng thủ công. Nếu reference tool không phải baseline zero, kết qu�
 | `TV_STATUS` | `TOOL_VISION_STATUS` | trạng thái setup/service/lỗi cuối |
 | `TV_SETUP_CAMERA` | `TOOL_VISION_SETUP_CAMERA` | học camera tại T0 hiện tại |
 | `TV_SETUP_SWITCH` | `TOOL_VISION_SETUP_SWITCH` | học switch tại T0 hiện tại |
-| `TV_CALIBRATE` | `TOOL_VISION_CALIBRATE` | đo tất cả tool, `MODE=XYZ/XY/Z` |
+| `TV_CALIBRATE` | `TOOL_VISION_CALIBRATE` | tự gia nhiệt 150 °C, đo rồi tắt heater |
 | `TV_REPORT` | `TOOL_VISION_REPORT` | in lại kết quả của session |
 
 Các macro này hiện thành nút trong Mainsail/Fluidd. Người dùng bình thường không
@@ -245,6 +282,8 @@ Các lỗi có chủ đích:
 - `< 8/10 points`: làm sạch nozzle, chỉnh focus/ánh sáng rồi setup lại;
 - `correction exceeded 2 mm`: đưa nozzle gần tâm hơn trước setup/đo;
 - `probe_multi_axis conflict`: tắt `[axiscope]` và `[tools_calibrate]`.
+- heater vẫn chạy sau khi dừng bằng emergency stop/shutdown: dùng
+  `TURN_OFF_HEATERS`; cleanup G-code không thể chạy sau khi Klipper đã shutdown.
 
 ## Kiến trúc và kiểm thử
 
@@ -280,8 +319,10 @@ API v2 và contract installer/config.
   tra ambiguity/rank/condition/residual.
 - [Axiscope](https://github.com/nic335/Axiscope): dùng
   `PrinterProbeMultiAxis`, trigger delta theo T0 và ý tưởng lấy vị trí switch hiện
-  tại. Bản mới lưu vị trí nguyên tử, kiểm tra switch mở và hỗ trợ API toolchanger
-  hiện tại.
+  tại. Ví dụ chính thức preheat mọi tool ở 150 °C và cung cấp hook sau pickup;
+  ToolVision kế thừa hai điểm này nhưng bổ sung chờ nhiệt từng tool và cleanup
+  heater cả khi phép đo lỗi. Bản mới cũng lưu vị trí nguyên tử, kiểm tra switch
+  mở và hỗ trợ API toolchanger hiện tại.
 - [klipper-toolchanger tools_calibrate](https://github.com/viesturz/klipper-toolchanger/blob/main/tools_calibrate.md):
   nguồn probe primitive, sampling và clean-nozzle guidance.
 - [klipper-toolchanger camera-align example](https://github.com/viesturz/klipper-toolchanger/blob/main/examples/camera-tool-align.cfg):
@@ -301,8 +342,10 @@ normal configuration is empty for camera-only XY and needs only `pin` for Z.
 Home XYZ, mount T0, jog it near the upward camera center and run
 `TV_SETUP_CAMERA`; jog T0 above the contact switch and run `TV_SETUP_SWITCH`;
 then run `TV_CALIBRATE MODE=XYZ`. Camera metadata is discovered from Moonraker.
-If several webcams are ambiguous, set `camera_name`. Results are report-only and
-must be repeat-tested before manual application.
+Calibration automatically heats all tools to 150 C, waits after each pickup,
+and turns every tool heater off on success or failure. If several webcams are
+ambiguous, set `camera_name`. Results are report-only and must be repeat-tested
+before manual application.
 
 ## Gỡ cài đặt
 

@@ -208,7 +208,10 @@ fi
 
 echo "[6/6] Starting Tool Vision and restarting Klipper..."
 sudo systemctl daemon-reload
-sudo systemctl enable --now "${SERVICE_NAME}"
+# `enable --now` starts a stopped service but does not reload an already-running
+# service. Always restart so an upgrade cannot leave the old API process alive.
+sudo systemctl enable "${SERVICE_NAME}"
+sudo systemctl restart "${SERVICE_NAME}"
 sudo systemctl restart klipper
 
 echo
@@ -221,5 +224,6 @@ echo "  2. Disable [axiscope] and [tools_calibrate]."
 echo "  3. Include Tool-Vision/tool_vision.cfg from printer.cfg."
 echo "  4. Restart, home, jog T0 over the camera, and run TV_SETUP_CAMERA."
 echo "  5. Jog T0 above the switch and run TV_SETUP_SWITCH (when pin is set)."
-echo "  6. Run TV_CALIBRATE MODE=XYZ. Results are report-only by default."
+echo "  6. Run TV_CALIBRATE MODE=Z. Heating to 150 C and cooldown are automatic."
+echo "     Results are report-only by default."
 echo "Service health: http://${LISTEN_HOST}:${LISTEN_PORT}/api/v2/health"
