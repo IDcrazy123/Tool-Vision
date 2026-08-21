@@ -8,7 +8,9 @@ KLIPPER_DIR="${KLIPPER_DIR:-${USER_HOME}/klipper}"
 VENV_DIR="${TOOL_VISION_VENV:-${USER_HOME}/tool-vision-env}"
 KLIPPER_EXTRAS="${KLIPPER_DIR}/klippy/extras"
 CONFIG_DIR="${TOOL_VISION_CONFIG_DIR:-${USER_HOME}/printer_data/config}"
+DATA_DIR="${TOOL_VISION_DATA_DIR:-$(dirname -- "${CONFIG_DIR}")}"
 MOONRAKER_CONFIG="${MOONRAKER_CONFIG:-${CONFIG_DIR}/moonraker.conf}"
+MOONRAKER_ALLOWED_SERVICES="${MOONRAKER_ALLOWED_SERVICES:-${DATA_DIR}/moonraker.asvc}"
 MOONRAKER_UPDATE_CONFIG="${CONFIG_DIR}/Tool-Vision/moonraker_update_manager.conf"
 MOONRAKER_INCLUDE_RE='^[[:space:]]*\[include[[:space:]]+Tool-Vision/moonraker_update_manager\.conf\][[:space:]]*(#.*)?$'
 MOONRAKER_SERVICE="${MOONRAKER_SERVICE:-moonraker}"
@@ -38,6 +40,20 @@ if [[ -f "${MOONRAKER_CONFIG}" ]] &&
 fi
 if [[ -f "${MOONRAKER_UPDATE_CONFIG}" ]]; then
     rm -f -- "${MOONRAKER_UPDATE_CONFIG}"
+fi
+
+if [[ -f "${MOONRAKER_ALLOWED_SERVICES}" ]] &&
+    grep -Fxq 'tool-vision' "${MOONRAKER_ALLOWED_SERVICES}"; then
+    ALLOWED_SERVICES_BACKUP="${MOONRAKER_ALLOWED_SERVICES}.pre-tool-vision-uninstall-$(date +%Y%m%d-%H%M%S)"
+    TEMP_ALLOWED_SERVICES="$(mktemp)"
+    sudo -u "${INSTALL_USER}" cp -a -- \
+        "${MOONRAKER_ALLOWED_SERVICES}" "${ALLOWED_SERVICES_BACKUP}"
+    grep -Fvx 'tool-vision' "${MOONRAKER_ALLOWED_SERVICES}" > \
+        "${TEMP_ALLOWED_SERVICES}" || true
+    sudo install -o "${INSTALL_USER}" -g "${INSTALL_GROUP}" -m 0644 \
+        "${TEMP_ALLOWED_SERVICES}" "${MOONRAKER_ALLOWED_SERVICES}"
+    rm -f -- "${TEMP_ALLOWED_SERVICES}"
+    echo "Removed tool-vision service authorization; backup: ${ALLOWED_SERVICES_BACKUP}"
 fi
 
 if [[ "${1:-}" == "--purge-venv" && -d "${VENV_DIR}" ]]; then

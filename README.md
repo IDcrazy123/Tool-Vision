@@ -123,9 +123,11 @@ Installer đồng thời tạo:
 ~/printer_data/config/Tool-Vision/moonraker_update_manager.conf
 ```
 
-và thêm một include vào `moonraker.conf` sau khi đã sao lưu file đó. Checkout
-Git và cấu hình người dùng được tách riêng, nên Moonraker vẫn yêu cầu repository
-sạch nhưng người dùng có thể sửa `tool_vision.cfg` bình thường.
+và thêm một include vào `moonraker.conf` sau khi đã sao lưu file đó. Installer
+cũng sao lưu rồi thêm đúng dịch vụ `tool-vision` vào
+`~/printer_data/moonraker.asvc`, theo cơ chế dịch vụ được phép của Moonraker.
+Checkout Git và cấu hình người dùng được tách riêng, nên Moonraker vẫn yêu cầu
+repository sạch nhưng người dùng có thể sửa `tool_vision.cfg` bình thường.
 
 Thêm include rồi restart:
 
@@ -146,6 +148,10 @@ Sau lần chạy installer đầu tiên, trang **Machine → Update Manager** c�
 1. fetch/pull đúng Git branch đã được installer ghi nhận;
 2. cập nhật dependency trong `~/tool-vision-env` nếu requirements thay đổi;
 3. restart `tool-vision` và `klipper` sau khi cập nhật.
+
+Moonraker tự kiểm tra phiên bản mới và Mainsail hiển thị nút cập nhật; thao tác
+cập nhật vẫn do người dùng bấm để không làm gián đoạn một máy đang hoạt động.
+Không cần SSH hay chạy lại `install.sh` cho các lần cập nhật thông thường.
 
 Moonraker không cho update trong lúc đang in và chỉ quản lý repository sạch.
 Không sửa file bên trong `~/Tool-Vision`; mọi cấu hình cần chỉnh nằm ở

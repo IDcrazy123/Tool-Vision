@@ -68,6 +68,13 @@ class RewriteContracts(unittest.TestCase):
         self.assertIn('systemctl restart "${MOONRAKER_SERVICE}"', installer)
         self.assertIn("git clone --branch", installer)
         self.assertIn("status --porcelain", installer)
+        self.assertIn("sudo -v", installer)
+        self.assertIn("moonraker.asvc", installer)
+        self.assertIn("grep -Fxq 'tool-vision'", installer)
+
+        uninstaller = (PROJECT / "uninstall.sh").read_text(encoding="utf-8")
+        self.assertIn("moonraker.asvc", uninstaller)
+        self.assertIn("grep -Fvx 'tool-vision'", uninstaller)
 
     def test_moonraker_updater_tracks_git_runtime_and_managed_services(self):
         parser = configparser.RawConfigParser(strict=True)

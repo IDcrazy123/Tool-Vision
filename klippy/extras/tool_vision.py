@@ -19,7 +19,7 @@ class ToolVisionError(RuntimeError):
 
 
 class ToolVision:
-    VERSION = "3.2.0"
+    VERSION = "3.2.1"
     # Axiscope's official configuration and the legacy toolchanger calibration
     # both use 150 C. Keep it in code so normal users do not need another cfg
     # value or console parameter merely to get repeatable heated Z results.

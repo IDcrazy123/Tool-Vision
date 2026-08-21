@@ -91,12 +91,22 @@ install_runtime_file() {
 INSTALL_USER="${TOOL_VISION_USER:-${SUDO_USER:-$(id -un)}}"
 INSTALL_GROUP="$(id -gn "${INSTALL_USER}")"
 USER_HOME="$(getent passwd "${INSTALL_USER}" | cut -d: -f6)"
+
+# Validate privilege escalation before cloning or changing any user/system files.
+# This prevents a non-interactive install from stopping halfway at systemd.
+if ! sudo -v; then
+    echo "ERROR: Administrator privileges are required to install ToolVision." >&2
+    exit 1
+fi
+
 ensure_persistent_git_source
 KLIPPER_DIR="${KLIPPER_DIR:-${USER_HOME}/klipper}"
 RUNTIME_DIR="${SOURCE_DIR}"
 CONFIG_DIR="${TOOL_VISION_CONFIG_DIR:-${USER_HOME}/printer_data/config}"
+DATA_DIR="${TOOL_VISION_DATA_DIR:-$(dirname -- "${CONFIG_DIR}")}"
 CONFIG_TARGET="${CONFIG_DIR}/Tool-Vision/tool_vision.cfg"
 MOONRAKER_CONFIG="${MOONRAKER_CONFIG:-${CONFIG_DIR}/moonraker.conf}"
+MOONRAKER_ALLOWED_SERVICES="${MOONRAKER_ALLOWED_SERVICES:-${DATA_DIR}/moonraker.asvc}"
 MOONRAKER_UPDATE_CONFIG="${CONFIG_DIR}/Tool-Vision/moonraker_update_manager.conf"
 MOONRAKER_INCLUDE="[include Tool-Vision/moonraker_update_manager.conf]"
 MOONRAKER_SERVICE="${MOONRAKER_SERVICE:-moonraker}"
@@ -164,6 +174,11 @@ fi
 if [[ ! -f "${MOONRAKER_CONFIG}" ]]; then
     echo "ERROR: Moonraker config not found at ${MOONRAKER_CONFIG}." >&2
     echo "Set MOONRAKER_CONFIG=/actual/path and run this installer again." >&2
+    exit 1
+fi
+if [[ ! -f "${MOONRAKER_ALLOWED_SERVICES}" ]]; then
+    echo "ERROR: Moonraker allowed-services file not found at ${MOONRAKER_ALLOWED_SERVICES}." >&2
+    echo "Start Moonraker once, or set TOOL_VISION_DATA_DIR to its actual data directory." >&2
     exit 1
 fi
 if ! command -v python3 >/dev/null 2>&1; then
@@ -258,6 +273,22 @@ if ! grep -Eq \
     echo "  Added ${MOONRAKER_INCLUDE}; backup: ${MOONRAKER_BACKUP}"
 else
     echo "  Moonraker include already present"
+fi
+
+# Current Moonraker releases require third-party services to be explicitly
+# authorized before Update Manager may restart them. Preserve the generated
+# default list and append only ToolVision's exact, case-sensitive unit name.
+if ! grep -Fxq 'tool-vision' "${MOONRAKER_ALLOWED_SERVICES}"; then
+    ALLOWED_SERVICES_BACKUP="${MOONRAKER_ALLOWED_SERVICES}.pre-tool-vision-$(date +%Y%m%d-%H%M%S)"
+    sudo -u "${INSTALL_USER}" cp -a -- \
+        "${MOONRAKER_ALLOWED_SERVICES}" "${ALLOWED_SERVICES_BACKUP}"
+    # Start with a newline because third-party installers may have written the
+    # existing final entry without a trailing line ending.
+    printf '\ntool-vision\n' | \
+        sudo -u "${INSTALL_USER}" tee -a "${MOONRAKER_ALLOWED_SERVICES}" >/dev/null
+    echo "  Authorized tool-vision service; backup: ${ALLOWED_SERVICES_BACKUP}"
+else
+    echo "  tool-vision service already authorized"
 fi
 
 echo "[6/7] Removing the legacy underscore-named service if present..."

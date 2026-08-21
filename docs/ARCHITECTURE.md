@@ -141,6 +141,12 @@ success while leaving old code active. The generated updater section also
 declares the isolated virtualenv and requirements file, then asks Moonraker to
 restart `tool-vision` and `klipper` after a successful update.
 
+Moonraker permits an extension updater to restart a third-party systemd unit
+only when the exact, case-sensitive service name is present in the data
+directory's `moonraker.asvc`. The installer backs up that file and appends only
+`tool-vision`; uninstall performs the inverse operation without altering the
+other allowed services.
+
 User-owned calibration config and learned/result JSON remain under
 `printer_data/config`, outside the repository. This preserves Moonraker's
 pristine-repository invariant. The installer records the currently checked-out
