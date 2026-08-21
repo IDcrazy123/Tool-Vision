@@ -113,9 +113,19 @@ cd Tool-Vision
 ./install.sh
 ```
 
-Installer tạo runtime độc lập ở `~/printer_data/tool-vision`, venv riêng, service
-`tool-vision.service`, bốn symlink extension và file cấu hình có thể sửa trong
-`~/printer_data/config/Tool-Vision/`. Nó không sửa `printer.cfg`.
+Installer dùng chính Git checkout `~/Tool-Vision` làm runtime, tạo venv riêng,
+service `tool-vision.service`, bốn symlink extension và file cấu hình có thể sửa
+trong `~/printer_data/config/Tool-Vision/`. Nó không sửa `printer.cfg`.
+
+Installer đồng thời tạo:
+
+```text
+~/printer_data/config/Tool-Vision/moonraker_update_manager.conf
+```
+
+và thêm một include vào `moonraker.conf` sau khi đã sao lưu file đó. Checkout
+Git và cấu hình người dùng được tách riêng, nên Moonraker vẫn yêu cầu repository
+sạch nhưng người dùng có thể sửa `tool_vision.cfg` bình thường.
 
 Thêm include rồi restart:
 
@@ -127,6 +137,23 @@ Thêm include rồi restart:
 FIRMWARE_RESTART
 TV_STATUS
 ```
+
+### Cập nhật trong Mainsail/Fluidd
+
+Sau lần chạy installer đầu tiên, trang **Machine → Update Manager** có mục
+`tool-vision` giống Klipper. Nhấn refresh rồi update tại đó; Moonraker sẽ:
+
+1. fetch/pull đúng Git branch đã được installer ghi nhận;
+2. cập nhật dependency trong `~/tool-vision-env` nếu requirements thay đổi;
+3. restart `tool-vision` và `klipper` sau khi cập nhật.
+
+Moonraker không cho update trong lúc đang in và chỉ quản lý repository sạch.
+Không sửa file bên trong `~/Tool-Vision`; mọi cấu hình cần chỉnh nằm ở
+`~/printer_data/config/Tool-Vision/tool_vision.cfg`.
+
+Máy đã cài bản ToolVision dùng runtime copy cũ chỉ cần cập nhật Git thủ công và
+chạy `./install.sh` **một lần** để chuyển service/symlink sang checkout Git và
+đăng ký Update Manager. Những lần sau có thể cập nhật trên giao diện.
 
 Khi nâng từ ToolVision 2, installer sao lưu cấu hình mẫu cũ với hậu tố
 `.pre-v3-<timestamp>` trước khi đặt file tối giản mới. State schema 1 không được
@@ -353,5 +380,6 @@ before manual application.
 ./uninstall.sh
 ```
 
-Service và bốn symlink được gỡ; state, result, config và backup được giữ lại.
-Thêm `--purge-venv` chỉ khi muốn xóa cả môi trường Python riêng.
+Service, bốn symlink và mục Moonraker Update Manager được gỡ. Git checkout,
+state, result, cấu hình và backup được giữ lại. Thêm `--purge-venv` chỉ khi muốn
+xóa cả môi trường Python riêng.

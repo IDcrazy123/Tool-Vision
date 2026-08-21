@@ -131,3 +131,17 @@ tool_vision_state.py
 The host service never commands printer motion. The Klipper extension never
 imports OpenCV or NumPy. This boundary keeps camera latency and image processing
 away from Klipper's motion/MCU scheduling path.
+
+## Moonraker-managed deployment
+
+The Git checkout is the runtime. Klipper's four extension links and the
+ToolVision systemd service therefore see a Moonraker `git_repo` update
+immediately; copying files to a second non-Git runtime would make the UI claim
+success while leaving old code active. The generated updater section also
+declares the isolated virtualenv and requirements file, then asks Moonraker to
+restart `tool-vision` and `klipper` after a successful update.
+
+User-owned calibration config and learned/result JSON remain under
+`printer_data/config`, outside the repository. This preserves Moonraker's
+pristine-repository invariant. The installer records the currently checked-out
+branch as `primary_branch` and never guesses or switches the user's channel.
