@@ -19,7 +19,11 @@ class ToolVisionError(RuntimeError):
 
 
 class ToolVision:
-    VERSION = "3.0.0"
+    VERSION = "3.2.0"
+    # Axiscope's official configuration and the legacy toolchanger calibration
+    # both use 150 C. Keep it in code so normal users do not need another cfg
+    # value or console parameter merely to get repeatable heated Z results.
+    DEFAULT_CALIBRATION_TEMPERATURE = 150.0
     CAMERA_POINTS = (
         (0.000, -0.500),
         (0.294, -0.405),
@@ -95,6 +99,12 @@ class ToolVision:
         self.before_tool_gcode = self.gcode_macro.load_template(
             config, "before_tool_gcode", ""
         )
+        # Runs after the requested tool is active and (when TEMP is used) has
+        # reached temperature. This is the safe place for a machine-specific
+        # nozzle scrubber; its coordinates cannot be inferred by ToolVision.
+        self.after_select_gcode = self.gcode_macro.load_template(
+            config, "after_select_gcode", ""
+        )
         self.after_tool_gcode = self.gcode_macro.load_template(
             config, "after_tool_gcode", ""
         )
@@ -167,7 +177,7 @@ class ToolVision:
             ),
             "TOOL_VISION_CALIBRATE": (
                 self.cmd_CALIBRATE,
-                "Measure relative offsets for every assigned tool",
+                "Auto-heat, measure relative offsets, then cool every tool",
             ),
             "TOOL_VISION_REPORT": (
                 self.cmd_REPORT,
@@ -539,10 +549,36 @@ class ToolVision:
         result["z"] = trigger - reference_trigger
         return reference_trigger
 
-    def _calibrate_all(self, gcmd, mode):
+    def _set_all_tool_temperatures(self, tools, temperature):
+        """Set every tool without waiting, following Axiscope's M104 pattern."""
+        for number in tools:
+            self.gcode.run_script_from_command(
+                "M104 T%d S%.1f" % (int(number), float(temperature))
+            )
+
+    def _wait_for_active_tool_temperature(self, temperature):
+        """Wait only after pickup, when Klipper knows the active extruder."""
+        self.gcode.run_script_from_command("M109 S%.1f" % float(temperature))
+
+    def _cool_all_tools(self, gcmd, tools):
+        """Best-effort cleanup which must not hide an earlier calibration error."""
+        for number in tools:
+            try:
+                self.gcode.run_script_from_command("M104 T%d S0" % int(number))
+            except Exception as exc:
+                gcmd.respond_info(
+                    "Warning: could not turn off T%d heater: %s" % (number, exc)
+                )
+
+    def _calibrate_all(
+        self, gcmd, mode, temperature=DEFAULT_CALIBRATION_TEMPERATURE
+    ):
         mode = mode.upper()
         if mode not in ("XY", "Z", "XYZ"):
             raise ToolVisionError("MODE must be XY, Z, or XYZ")
+        temperature = float(temperature)
+        if not math.isfinite(temperature) or temperature < 0.0:
+            raise ToolVisionError("TEMP must be a finite value of 0 or higher")
         if "X" in mode and "camera" not in self.state["stations"]:
             raise ToolVisionError("run TOOL_VISION_SETUP_CAMERA first")
         if "Z" in mode:
@@ -559,42 +595,63 @@ class ToolVision:
         self.results = {}
         reference_xy = None
         reference_z = None
-        self._run_template(self.start_gcode, self.reference_tool)
         try:
-            for number in tools:
-                self._run_template(self.before_tool_gcode, number)
-                self.adapter.select(number)
-                if "X" in mode:
-                    reference_xy = self._measure_xy(number, reference_xy)
-                if "Z" in mode:
-                    reference_z = self._measure_z(gcmd, number, reference_z)
-                self._run_template(self.after_tool_gcode, number)
-                result = self.results[str(number)]
-                gcmd.respond_info(
-                    "T%d measured: X%s Y%s Z%s"
-                    % (
-                        number,
-                        self._format_value(result.get("x")),
-                        self._format_value(result.get("y")),
-                        self._format_value(result.get("z")),
+            self._run_template(self.start_gcode, self.reference_tool)
+            try:
+                if temperature > 0.0:
+                    # Axiscope's documented workflow preheats every tool to
+                    # 150 C. Setting all targets first lets parked tools warm
+                    # in parallel; M109 still verifies each mounted tool.
+                    self._set_all_tool_temperatures(tools, temperature)
+                    gcmd.respond_info(
+                        "Preheating %d tools to %.1f C"
+                        % (len(tools), temperature)
                     )
+                for number in tools:
+                    self._run_template(self.before_tool_gcode, number)
+                    self.adapter.select(number)
+                    if temperature > 0.0:
+                        self._wait_for_active_tool_temperature(temperature)
+                    self._run_template(self.after_select_gcode, number)
+                    if "X" in mode:
+                        reference_xy = self._measure_xy(number, reference_xy)
+                    if "Z" in mode:
+                        reference_z = self._measure_z(gcmd, number, reference_z)
+                    self._run_template(self.after_tool_gcode, number)
+                    result = self.results[str(number)]
+                    gcmd.respond_info(
+                        "T%d measured: X%s Y%s Z%s"
+                        % (
+                            number,
+                            self._format_value(result.get("x")),
+                            self._format_value(result.get("y")),
+                            self._format_value(result.get("z")),
+                        )
+                    )
+            except Exception:
+                self._run_template(
+                    self.abort_gcode, self.adapter.active_tool_number()
                 )
-        except Exception:
-            self._run_template(self.abort_gcode, self.adapter.active_tool_number())
-            raise
+                raise
+            finally:
+                if original_tool is not None:
+                    try:
+                        self.adapter.select(original_tool)
+                    except Exception:
+                        pass
+            self._run_template(self.finish_gcode, original_tool)
         finally:
-            if original_tool is not None:
-                try:
-                    self.adapter.select(original_tool)
-                except Exception:
-                    pass
-        self._run_template(self.finish_gcode, original_tool)
+            if temperature > 0.0:
+                # This is deliberately outside the finish hook: cleanup runs
+                # after it and also covers start/measure/finish exceptions.
+                self._cool_all_tools(gcmd, tools)
         self.last_run = time.time()
         payload = {
             "schema_version": 1,
             "tool_vision_version": self.VERSION,
             "measured": self.last_run,
             "mode": mode,
+            "temperature": temperature,
             "reference_tool": self.reference_tool,
             "offsets": self.results,
             "note": "report only; offsets were not applied automatically",
@@ -672,7 +729,12 @@ class ToolVision:
 
     def cmd_CALIBRATE(self, gcmd):
         mode = gcmd.get("MODE", "XYZ")
-        self._guard(gcmd, lambda: self._calibrate_all(gcmd, mode))
+        temperature = gcmd.get_float(
+            "TEMP", self.DEFAULT_CALIBRATION_TEMPERATURE, minval=0.0
+        )
+        self._guard(
+            gcmd, lambda: self._calibrate_all(gcmd, mode, temperature)
+        )
 
     def cmd_REPORT(self, gcmd):
         self._report(gcmd)

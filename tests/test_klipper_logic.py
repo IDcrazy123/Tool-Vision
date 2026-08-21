@@ -1,3 +1,5 @@
+from pathlib import Path
+from tempfile import TemporaryDirectory
 import unittest
 
 from klippy.extras.tool_vision import ToolVision, ToolVisionError
@@ -70,6 +72,135 @@ class SafeTravelTests(unittest.TestCase):
         vision.state = {"stations": {}}
         with self.assertRaises(ToolVisionError):
             vision._move_to_station("camera", 0)
+
+
+class ThermalCalibrationTests(unittest.TestCase):
+    class FakeGcode:
+        def __init__(self, events):
+            self.events = events
+
+        def run_script_from_command(self, command):
+            self.events.append(("gcode", command))
+
+    class FakeCommand:
+        def __init__(self, events):
+            self.events = events
+
+        def respond_info(self, message):
+            self.events.append(("info", message))
+
+    class FakeAdapter:
+        def __init__(self, events):
+            self.events = events
+            self.active = 0
+
+        def tool_numbers(self):
+            return [0, 1]
+
+        def active_tool_number(self):
+            return self.active
+
+        def select(self, number):
+            self.active = number
+            self.events.append(("select", number))
+
+    def make_vision(self, result_file):
+        events = []
+        vision = object.__new__(ToolVision)
+        vision.reference_tool = 0
+        vision.state = {"stations": {"switch": {}}}
+        vision.probe_multi_axis = object()
+        vision.adapter = self.FakeAdapter(events)
+        vision.gcode = self.FakeGcode(events)
+        vision.start_gcode = "start"
+        vision.before_tool_gcode = "before"
+        vision.after_select_gcode = "after_select"
+        vision.after_tool_gcode = "after"
+        vision.finish_gcode = "finish"
+        vision.abort_gcode = "abort"
+        vision.result_file = str(result_file)
+        vision.last_run = None
+        vision.results = {}
+        vision._run_template = lambda template, tool: events.append(
+            ("template", template, tool)
+        )
+        vision._report = lambda gcmd: events.append(("report",))
+        return vision, events
+
+    def test_heated_calibration_preheats_waits_after_pickup_and_cools(self):
+        with TemporaryDirectory() as directory:
+            vision, events = self.make_vision(Path(directory) / "results.json")
+
+            def measure(gcmd, number, reference):
+                events.append(("measure", number))
+                vision.results[str(number)] = {"z": 0.0}
+                return 1.0 if reference is None else reference
+
+            vision._measure_z = measure
+            vision._calibrate_all(self.FakeCommand(events), "Z", 150.0)
+
+        self.assertEqual(
+            [event for event in events if event[0] == "gcode"],
+            [
+                ("gcode", "M104 T0 S150.0"),
+                ("gcode", "M104 T1 S150.0"),
+                ("gcode", "M109 S150.0"),
+                ("gcode", "M109 S150.0"),
+                ("gcode", "M104 T0 S0"),
+                ("gcode", "M104 T1 S0"),
+            ],
+        )
+        for number in (0, 1):
+            self.assertLess(
+                events.index(("select", number)),
+                events.index(("template", "after_select", number)),
+            )
+            self.assertLess(
+                events.index(("template", "after_select", number)),
+                events.index(("measure", number)),
+            )
+        self.assertLess(
+            events.index(("template", "finish", 0)),
+            events.index(("gcode", "M104 T0 S0")),
+        )
+
+    def test_heaters_are_turned_off_when_measurement_fails(self):
+        with TemporaryDirectory() as directory:
+            vision, events = self.make_vision(Path(directory) / "results.json")
+
+            def fail_measure(gcmd, number, reference):
+                vision.results[str(number)] = {"z": 0.0}
+                if number == 1:
+                    raise RuntimeError("probe failure")
+                return 1.0
+
+            vision._measure_z = fail_measure
+            with self.assertRaisesRegex(RuntimeError, "probe failure"):
+                vision._calibrate_all(self.FakeCommand(events), "Z", 150.0)
+
+        self.assertIn(("template", "abort", 1), events)
+        self.assertIn(("gcode", "M104 T0 S0"), events)
+        self.assertIn(("gcode", "M104 T1 S0"), events)
+
+    def test_console_command_defaults_to_axiscope_temperature(self):
+        captured = []
+        vision = object.__new__(ToolVision)
+        vision._guard = lambda gcmd, callback: callback()
+        vision._calibrate_all = lambda gcmd, mode, temperature: captured.append(
+            (mode, temperature)
+        )
+
+        class Command:
+            def get(self, name, default):
+                return default
+
+            def get_float(self, name, default, minval=None):
+                return default
+
+        vision.cmd_CALIBRATE(Command())
+        self.assertEqual(
+            captured, [("XYZ", ToolVision.DEFAULT_CALIBRATION_TEMPERATURE)]
+        )
 
 
 if __name__ == "__main__":

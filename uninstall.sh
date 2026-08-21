@@ -2,10 +2,16 @@
 set -Eeuo pipefail
 
 INSTALL_USER="${TOOL_VISION_USER:-${SUDO_USER:-$(id -un)}}"
+INSTALL_GROUP="$(id -gn "${INSTALL_USER}")"
 USER_HOME="$(getent passwd "${INSTALL_USER}" | cut -d: -f6)"
 KLIPPER_DIR="${KLIPPER_DIR:-${USER_HOME}/klipper}"
 VENV_DIR="${TOOL_VISION_VENV:-${USER_HOME}/tool-vision-env}"
 KLIPPER_EXTRAS="${KLIPPER_DIR}/klippy/extras"
+CONFIG_DIR="${TOOL_VISION_CONFIG_DIR:-${USER_HOME}/printer_data/config}"
+MOONRAKER_CONFIG="${MOONRAKER_CONFIG:-${CONFIG_DIR}/moonraker.conf}"
+MOONRAKER_UPDATE_CONFIG="${CONFIG_DIR}/Tool-Vision/moonraker_update_manager.conf"
+MOONRAKER_INCLUDE_RE='^[[:space:]]*\[include[[:space:]]+Tool-Vision/moonraker_update_manager\.conf\][[:space:]]*(#.*)?$'
+MOONRAKER_SERVICE="${MOONRAKER_SERVICE:-moonraker}"
 
 sudo systemctl disable --now tool-vision.service 2>/dev/null || true
 sudo rm -f -- /etc/systemd/system/tool-vision.service
@@ -19,6 +25,21 @@ for klipper_file in tool_vision.py tool_vision_client.py tool_vision_state.py \
     fi
 done
 
+if [[ -f "${MOONRAKER_CONFIG}" ]] &&
+    grep -Eq "${MOONRAKER_INCLUDE_RE}" "${MOONRAKER_CONFIG}"; then
+    MOONRAKER_BACKUP="${MOONRAKER_CONFIG}.pre-tool-vision-uninstall-$(date +%Y%m%d-%H%M%S)"
+    TEMP_MOONRAKER="$(mktemp)"
+    sudo -u "${INSTALL_USER}" cp -a -- "${MOONRAKER_CONFIG}" "${MOONRAKER_BACKUP}"
+    grep -Ev "${MOONRAKER_INCLUDE_RE}" "${MOONRAKER_CONFIG}" > "${TEMP_MOONRAKER}" || true
+    sudo install -o "${INSTALL_USER}" -g "${INSTALL_GROUP}" -m 0644 \
+        "${TEMP_MOONRAKER}" "${MOONRAKER_CONFIG}"
+    rm -f -- "${TEMP_MOONRAKER}"
+    echo "Removed Moonraker include; backup: ${MOONRAKER_BACKUP}"
+fi
+if [[ -f "${MOONRAKER_UPDATE_CONFIG}" ]]; then
+    rm -f -- "${MOONRAKER_UPDATE_CONFIG}"
+fi
+
 if [[ "${1:-}" == "--purge-venv" && -d "${VENV_DIR}" ]]; then
     case "${VENV_DIR}" in
         "${USER_HOME}"/*tool-vision*) rm -rf -- "${VENV_DIR}" ;;
@@ -26,5 +47,8 @@ if [[ "${1:-}" == "--purge-venv" && -d "${VENV_DIR}" ]]; then
     esac
 fi
 
+sudo systemctl restart "${MOONRAKER_SERVICE}"
+
 echo "Tool Vision service and Klipper link removed."
+echo "The Tool-Vision Git checkout, learned state, results and editable config were kept."
 echo "Remove the [tool_vision] include manually before restarting Klipper."

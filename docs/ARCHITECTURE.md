@@ -39,6 +39,16 @@ This is the sign used by Axiscope. Five samples, median aggregation, 0.05 mm
 sample tolerance and two retries are the source-backed defaults. They remain
 overridable per command for unusual hardware, not required in `.cfg`.
 
+Axiscope keeps heating in optional G-code templates; its documented example
+preheats all tools to 150 C, offers an after-pickup scrub hook, and cools all
+tools at the end. ToolVision uses the same 150 C reference automatically. It
+sets all targets first, waits for the active extruder after each pickup, runs
+`after_select_gcode`, and measures only then. `TEMP=` remains an advanced
+override, including `TEMP=0` for an explicitly cold run. Heater targets are
+cleared in a `finally` path so a normal calibration exception cannot leave tools
+heating. An MCU/Klipper emergency shutdown remains outside G-code cleanup
+guarantees.
+
 ### XY — kTAMV compatible
 
 The operator puts the reference nozzle approximately at the image center and
@@ -92,6 +102,8 @@ transform validates; this is the practical "image is usable" test.
   performs a surprise tool change after the operator manually positions it.
 - All targets are checked against kinematic limits before motion.
 - The switch must be open before probing.
+- Calibration owns the tool-heater targets: it defaults to the source-backed
+  150 C reference and clears every target on success and recoverable errors.
 - Station travel raises Z first, then moves XY, then approaches the fixture.
 - A taught safe Z defaults to 5 mm above the setup position, clamped to the
   machine limit. `SAFE_Z=` on the setup command is the explicit override for a
@@ -119,3 +131,17 @@ tool_vision_state.py
 The host service never commands printer motion. The Klipper extension never
 imports OpenCV or NumPy. This boundary keeps camera latency and image processing
 away from Klipper's motion/MCU scheduling path.
+
+## Moonraker-managed deployment
+
+The Git checkout is the runtime. Klipper's four extension links and the
+ToolVision systemd service therefore see a Moonraker `git_repo` update
+immediately; copying files to a second non-Git runtime would make the UI claim
+success while leaving old code active. The generated updater section also
+declares the isolated virtualenv and requirements file, then asks Moonraker to
+restart `tool-vision` and `klipper` after a successful update.
+
+User-owned calibration config and learned/result JSON remain under
+`printer_data/config`, outside the repository. This preserves Moonraker's
+pristine-repository invariant. The installer records the currently checked-out
+branch as `primary_branch` and never guesses or switches the user's channel.

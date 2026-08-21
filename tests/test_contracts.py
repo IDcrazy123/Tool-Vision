@@ -54,7 +54,7 @@ class RewriteContracts(unittest.TestCase):
         self.assertNotIn("SET_TOOL_PARAMETER", source)
         self.assertNotIn("SAVE_CONFIG", source)
 
-    def test_installer_links_every_extension_module_and_uses_v2_health(self):
+    def test_installer_links_modules_and_registers_moonraker_runtime(self):
         installer = (PROJECT / "install.sh").read_text(encoding="utf-8")
         for module in (
             "tool_vision.py", "tool_vision_client.py", "tool_vision_state.py",
@@ -62,7 +62,31 @@ class RewriteContracts(unittest.TestCase):
         ):
             self.assertIn(module, installer)
         self.assertIn("/api/v2/health", installer)
-        self.assertNotIn("git clone", installer)
+        self.assertIn('systemctl restart "${SERVICE_NAME}"', installer)
+        self.assertIn('RUNTIME_DIR="${SOURCE_DIR}"', installer)
+        self.assertIn("moonraker_update_manager.conf", installer)
+        self.assertIn('systemctl restart "${MOONRAKER_SERVICE}"', installer)
+        self.assertIn("git clone --branch", installer)
+        self.assertIn("status --porcelain", installer)
+
+    def test_moonraker_updater_tracks_git_runtime_and_managed_services(self):
+        parser = configparser.RawConfigParser(strict=True)
+        loaded = parser.read(
+            PROJECT / "moonraker_update_manager.conf.in", encoding="utf-8"
+        )
+        self.assertEqual(len(loaded), 1)
+        section = "update_manager tool-vision"
+        self.assertIn("update_manager", parser.sections())
+        self.assertEqual(parser.get(section, "type"), "git_repo")
+        self.assertEqual(parser.get(section, "path"), "@REPO_DIR@")
+        self.assertEqual(parser.get(section, "primary_branch"), "@PRIMARY_BRANCH@")
+        self.assertEqual(parser.get(section, "virtualenv"), "@VIRTUALENV@")
+        self.assertEqual(
+            parser.get(section, "requirements"), "server/requirements.txt"
+        )
+        self.assertEqual(
+            parser.get(section, "managed_services"), "tool-vision klipper"
+        )
 
     def test_systemd_arguments_match_app_parser(self):
         unit = (PROJECT / "server" / "tool-vision.service.in").read_text(
