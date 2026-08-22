@@ -34,13 +34,21 @@ updated
 stations.camera?  -> position XYZ, safe_z, frame width/height
 stations.switch?  -> position XYZ, safe_z, trigger_z
 vision.profile?   -> detector profile schema 1
-vision.transform? -> transform schema 1
+vision.transform? -> transform schema 2 (`v3.3.0-rc1`)
 ```
 
 `StateStore` kiểm tra top-level, station position và số hữu hạn. Profile và
-transform được host service kiểm tra sâu khi configure. Schema không tương thích
-hiện bị bỏ qua trong RAM và hiện lỗi ở `TV_STATUS`; chưa có migration/quarantine
-tự động (R-009).
+transform được host service kiểm tra sâu khi configure. Top-level schema không
+tương thích bị bỏ qua trong RAM và ghi vào `last_error`; nested transform cũ bị
+từ chối ở preflight XY. Chưa có migration/quarantine tự động (R-009).
+
+Transform schema 2 bổ sung leave-one-out RMS, pixel noise, gain mm/pixel và
+estimated/max uncertainty. Không thể suy ra các evidence này từ transform
+schema 1 đã lưu, nên không có migration số học an toàn. Khi nâng từ `v3.2.2`,
+phải backup `tool_vision_state.json`, cập nhật code/service đồng bộ rồi chạy lại
+`TV_SETUP_CAMERA`. Klippy từ chối schema cũ trước khi heat/toolchange trong một
+calibration XY; file backup gốc không bị tự động sửa. Station switch và kết quả
+Z không cần dạy lại chỉ vì thay transform camera.
 
 ### Result schema 1
 

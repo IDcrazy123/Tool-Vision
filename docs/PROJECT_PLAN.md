@@ -32,7 +32,7 @@ cứng khi chưa biết nguồn lực; mỗi phase chỉ được qua khi đạt
 |---|---|---|
 | WS0 | Governance, version, license, CI foundation | R-012, R-016 |
 | WS1 | Klipper realtime, motion, toolchange, heater safety | R-001–R-004, R-011 |
-| WS2 | Camera/detector/transform validity và resource bounds | R-005, R-006, R-010, R-013 |
+| WS2 | Camera/detector/transform validity và resource bounds | R-005, R-006, R-010, R-013, R-017 |
 | WS3 | Installer, updater, dependency, state/backup/rollback | R-007–R-009, R-014 |
 | WS4 | UX, progress, report history, support bundle | R-015 |
 

@@ -26,12 +26,14 @@ lên `v3.2.2` tại `dd92a05`; delta này chỉ tổ chức lại generated data
    động và ranh giới process.
 3. [`CODE_CONVENTIONS.md`](CODE_CONVENTIONS.md): quy ước viết code, xử lý lỗi,
    version, logging và cách chú thích.
-4. [`DEVELOPMENT.md`](DEVELOPMENT.md): cách chia việc, tạo nhánh, review và
+4. [`DETECTION_DESIGN.md`](DETECTION_DESIGN.md): nguồn chính, logic detector,
+   transform, các gate đã triển khai và giới hạn bằng chứng.
+5. [`DEVELOPMENT.md`](DEVELOPMENT.md): cách chia việc, tạo nhánh, review và
    Definition of Done.
-5. [`TESTING.md`](TESTING.md): chiến lược unit, integration, image corpus và
+6. [`TESTING.md`](TESTING.md): chiến lược unit, integration, image corpus và
    Hardware-in-the-Loop (HIL).
-6. [`RISK_REGISTER.md`](RISK_REGISTER.md): rủi ro đang mở và tiêu chí đóng.
-7. [`PROJECT_PLAN.md`](PROJECT_PLAN.md): thứ tự triển khai các workstream.
+7. [`RISK_REGISTER.md`](RISK_REGISTER.md): rủi ro đang mở và tiêu chí đóng.
+8. [`PROJECT_PLAN.md`](PROJECT_PLAN.md): thứ tự triển khai các workstream.
 
 ### Người bảo trì/phát hành
 
