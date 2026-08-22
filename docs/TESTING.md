@@ -13,6 +13,14 @@ rehydration. Branch coverage của RC được đo cùng suite đó:
 - host service modules thay đổi: camera 71%, detection 83%, transform 75%, app
   75%.
 
+Nhánh `v3.3.0-rc2` có 84 test pass ngày 2026-08-22. Mười bốn regression mới
+bao phủ fresh config layout, legacy copy migration, conflict/explicit-path
+preservation, machine config không bị tự sửa, local backup, reinstall an toàn,
+manual-uninstall gate và semantic metadata mà Moonraker đọc từ `git describe`.
+Đây là component/filesystem evidence; full
+systemd/pip image test và restore drill vẫn thuộc L4 trước stable release.
+Branch coverage cùng suite đạt 75% toàn cây; `scripts/config_layout.py` đạt 78%.
+
 Coverage thấp ở hai module điều phối safety là rủi ro, không chỉ là chỉ số style.
 Mục tiêu ngắn hạn là không giảm baseline; mục tiêu trước release stable là các
 nhánh safety/recovery được test theo behavior, không chạy theo một con số tổng
@@ -22,10 +30,13 @@ nhánh safety/recovery được test theo behavior, không chạy theo một con
 
 ```bash
 python -m unittest discover -s tests -v
-python -m compileall -q klippy server tests
+python -m compileall -q scripts klippy server tests
 python -m coverage run --branch -m unittest discover -s tests
 python -m coverage report -m
-python -m ruff check klippy server tests
+python -m ruff check --select E9,F63,F7,F82 scripts klippy server tests
+python -m ruff check --select E,F,I scripts/config_layout.py \
+  scripts/release_metadata.py tests/test_config_layout.py \
+  tests/test_release_metadata.py tests/test_contracts.py
 python -m pip_audit -r server/requirements.txt
 bash -n install.sh
 bash -n uninstall.sh

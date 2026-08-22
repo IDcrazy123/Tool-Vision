@@ -3,6 +3,7 @@ import pathlib
 import unittest
 
 from klippy.extras.tool_vision import ToolVision
+from scripts.config_layout import render_updater_block
 from server import __version__
 from server.app import VERSION as SERVER_VERSION
 from server.transform import TransformModel
@@ -67,13 +68,13 @@ class RewriteContracts(unittest.TestCase):
         self.assertNotIn("SET_TOOL_PARAMETER", source)
         self.assertNotIn("SAVE_CONFIG", source)
 
-    def test_default_generated_files_stay_inside_toolvision_config_dir(self):
+    def test_default_generated_files_stay_inside_printer_setup_dir(self):
         source = (PROJECT / "klippy" / "extras" / "tool_vision.py").read_text(
             encoding="utf-8"
         )
         sample = (PROJECT / "tool_vision.cfg").read_text(encoding="utf-8")
         for filename in ("tool_vision_state.json", "tool_vision_results.json"):
-            expected = "~/printer_data/config/Tool-Vision/%s" % filename
+            expected = "~/printer_data/config/Printer-Setup/%s" % filename
             self.assertIn(expected, source)
             self.assertIn(expected, sample)
 
@@ -87,7 +88,9 @@ class RewriteContracts(unittest.TestCase):
         self.assertIn("/api/v2/health", installer)
         self.assertIn('systemctl restart "${SERVICE_NAME}"', installer)
         self.assertIn('RUNTIME_DIR="${SOURCE_DIR}"', installer)
-        self.assertIn("moonraker_update_manager.conf", installer)
+        self.assertIn("scripts/config_layout.py", installer)
+        self.assertIn("/Printer-Setup/tool_vision.cfg", installer)
+        self.assertNotIn("moonraker_update_manager.conf.in", installer)
         self.assertIn('systemctl restart "${MOONRAKER_SERVICE}"', installer)
         self.assertIn("git clone --branch", installer)
         self.assertIn("status --porcelain", installer)
@@ -95,24 +98,35 @@ class RewriteContracts(unittest.TestCase):
         self.assertIn("moonraker.asvc", installer)
         self.assertIn("grep -Fxq 'tool-vision'", installer)
         self.assertIn("config_backups/tool-vision", installer)
-        self.assertIn("migrate_legacy_data_file", installer)
+        self.assertIn('"${RUNTIME_DIR}/scripts/config_layout.py"', installer)
+        self.assertIn("--check-only", installer)
+        self.assertIn("Manual configuration (add each block only once)", installer)
+        self.assertIn("[include Printer-Setup/tool_vision.cfg]", installer)
+        self.assertIn("[update_manager tool-vision]", installer)
 
         uninstaller = (PROJECT / "uninstall.sh").read_text(encoding="utf-8")
         self.assertIn("moonraker.asvc", uninstaller)
         self.assertIn("grep -Fvx 'tool-vision'", uninstaller)
+        self.assertIn("scripts/config_layout.py", uninstaller)
+        self.assertIn("manual configuration before uninstall", uninstaller)
 
-    def test_moonraker_updater_tracks_git_runtime_and_managed_services(self):
+    def test_direct_moonraker_updater_tracks_runtime_without_base_section(self):
         parser = configparser.RawConfigParser(strict=True)
-        loaded = parser.read(
-            PROJECT / "moonraker_update_manager.conf.in", encoding="utf-8"
+        updater = render_updater_block(
+            "/home/test/Tool-Vision",
+            "https://github.com/example/Tool-Vision.git",
+            "main",
+            "/home/test/tool-vision-env",
         )
-        self.assertEqual(len(loaded), 1)
+        parser.read_string(updater)
         section = "update_manager tool-vision"
-        self.assertIn("update_manager", parser.sections())
+        self.assertNotIn("update_manager", parser.sections())
         self.assertEqual(parser.get(section, "type"), "git_repo")
-        self.assertEqual(parser.get(section, "path"), "@REPO_DIR@")
-        self.assertEqual(parser.get(section, "primary_branch"), "@PRIMARY_BRANCH@")
-        self.assertEqual(parser.get(section, "virtualenv"), "@VIRTUALENV@")
+        self.assertEqual(parser.get(section, "path"), "/home/test/Tool-Vision")
+        self.assertEqual(parser.get(section, "primary_branch"), "main")
+        self.assertEqual(
+            parser.get(section, "virtualenv"), "/home/test/tool-vision-env"
+        )
         self.assertEqual(
             parser.get(section, "requirements"), "server/requirements.txt"
         )

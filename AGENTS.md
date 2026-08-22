@@ -63,9 +63,12 @@ historical audit to describe newer behavior.
 
 1. Inspect `git status`, current revision and applicable instructions. Preserve
    unrelated or user-owned worktree changes.
-2. For a major or safety-relevant change, create and push an annotated backup
-   tag before mutation. Back up printer config/state/result before deploy or
-   HIL. Use `docs/templates/CHANGE_PLAN.md`.
+2. For a major or safety-relevant change, create one timestamped local backup
+   directory under `.local-backups/` before mutation. Keep it ignored by Git;
+   do not push backup branches/tags to GitHub. Git tags are reserved for
+   semantic releases because Moonraker parses the nearest tag as the updater
+   version (ADR-0004). Back up printer config/state/result before deploy or HIL.
+   Use `docs/templates/CHANGE_PLAN.md`.
 3. Map the request to an existing Risk ID, or create one before changing a
    safety/data/deployment contract.
 4. Reproduce with a focused test or captured evidence. Make the smallest
@@ -79,13 +82,13 @@ historical audit to describe newer behavior.
 
 Use `apply_patch` for hand edits. Do not use destructive Git or filesystem
 commands to discard unknown work. Keep backups outside active config and record
-their exact path/tag in change evidence.
+their exact local path in change evidence.
 
 ## Minimum verification
 
 ```bash
 python -m unittest discover -s tests -v
-python -m compileall -q klippy server tests
+python -m compileall -q scripts klippy server tests
 bash -n install.sh
 bash -n uninstall.sh
 git diff --check

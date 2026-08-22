@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_USER="${TOOL_VISION_USER:-${SUDO_USER:-$(id -un)}}"
 INSTALL_GROUP="$(id -gn "${INSTALL_USER}")"
 USER_HOME="$(getent passwd "${INSTALL_USER}" | cut -d: -f6)"
@@ -9,13 +10,14 @@ VENV_DIR="${TOOL_VISION_VENV:-${USER_HOME}/tool-vision-env}"
 KLIPPER_EXTRAS="${KLIPPER_DIR}/klippy/extras"
 CONFIG_DIR="${TOOL_VISION_CONFIG_DIR:-${USER_HOME}/printer_data/config}"
 DATA_DIR="${TOOL_VISION_DATA_DIR:-$(dirname -- "${CONFIG_DIR}")}"
+PRINTER_CONFIG="${PRINTER_CONFIG:-${CONFIG_DIR}/printer.cfg}"
 MOONRAKER_CONFIG="${MOONRAKER_CONFIG:-${CONFIG_DIR}/moonraker.conf}"
 MOONRAKER_ALLOWED_SERVICES="${MOONRAKER_ALLOWED_SERVICES:-${DATA_DIR}/moonraker.asvc}"
-MOONRAKER_UPDATE_CONFIG="${CONFIG_DIR}/Tool-Vision/moonraker_update_manager.conf"
-MOONRAKER_INCLUDE_RE='^[[:space:]]*\[include[[:space:]]+Tool-Vision/moonraker_update_manager\.conf\][[:space:]]*(#.*)?$'
 MOONRAKER_SERVICE="${MOONRAKER_SERVICE:-moonraker}"
+KLIPPER_SERVICE="${KLIPPER_SERVICE:-klipper}"
 BACKUP_ROOT="${TOOL_VISION_BACKUP_DIR:-${DATA_DIR}/config_backups/tool-vision}"
-BACKUP_DIR="${BACKUP_ROOT}/uninstall-$(date +%Y%m%d-%H%M%S)"
+BACKUP_DIR="${BACKUP_ROOT}/uninstall-$(date +%Y%m%d-%H%M%S)-$$"
+CONFIG_HELPER="${SCRIPT_DIR}/scripts/config_layout.py"
 
 backup_user_file() {
     local source_path="$1"
@@ -28,7 +30,31 @@ backup_user_file() {
     fi
     sudo -u "${INSTALL_USER}" mkdir -p -- "$(dirname -- "${backup_path}")"
     sudo -u "${INSTALL_USER}" cp -a -- "${source_path}" "${backup_path}"
+    if ! cmp -s -- "${source_path}" "${backup_path}"; then
+        echo "ERROR: backup verification failed: ${backup_path}" >&2
+        exit 1
+    fi
 }
+
+if ! sudo -v; then
+    echo "ERROR: Administrator privileges are required to uninstall ToolVision." >&2
+    exit 1
+fi
+if [[ ! -f "${CONFIG_HELPER}" ]]; then
+    echo "ERROR: configuration helper not found: ${CONFIG_HELPER}" >&2
+    exit 1
+fi
+
+# Machine configuration is deliberately manual. Back it up first, then stop
+# before system changes if the ToolVision include/updater block still exists.
+echo "Checking manual configuration before uninstall..."
+echo "Remove the ToolVision include from printer.cfg and the optional"
+echo "[update_manager tool-vision] section from moonraker.conf, then rerun."
+sudo -u "${INSTALL_USER}" python3 "${CONFIG_HELPER}" uninstall \
+    --config-dir "${CONFIG_DIR}" \
+    --printer-config "${PRINTER_CONFIG}" \
+    --moonraker-config "${MOONRAKER_CONFIG}" \
+    --backup-dir "${BACKUP_DIR}"
 
 sudo systemctl disable --now tool-vision.service 2>/dev/null || true
 sudo rm -f -- /etc/systemd/system/tool-vision.service
@@ -41,21 +67,6 @@ for klipper_file in tool_vision.py tool_vision_client.py tool_vision_state.py \
         rm -f -- "${KLIPPER_TARGET}"
     fi
 done
-
-if [[ -f "${MOONRAKER_CONFIG}" ]] &&
-    grep -Eq "${MOONRAKER_INCLUDE_RE}" "${MOONRAKER_CONFIG}"; then
-    MOONRAKER_BACKUP="${BACKUP_DIR}/config/moonraker.conf"
-    TEMP_MOONRAKER="$(mktemp)"
-    backup_user_file "${MOONRAKER_CONFIG}" "config/moonraker.conf"
-    grep -Ev "${MOONRAKER_INCLUDE_RE}" "${MOONRAKER_CONFIG}" > "${TEMP_MOONRAKER}" || true
-    sudo install -o "${INSTALL_USER}" -g "${INSTALL_GROUP}" -m 0644 \
-        "${TEMP_MOONRAKER}" "${MOONRAKER_CONFIG}"
-    rm -f -- "${TEMP_MOONRAKER}"
-    echo "Removed Moonraker include; backup: ${MOONRAKER_BACKUP}"
-fi
-if [[ -f "${MOONRAKER_UPDATE_CONFIG}" ]]; then
-    rm -f -- "${MOONRAKER_UPDATE_CONFIG}"
-fi
 
 if [[ -f "${MOONRAKER_ALLOWED_SERVICES}" ]] &&
     grep -Fxq 'tool-vision' "${MOONRAKER_ALLOWED_SERVICES}"; then
@@ -77,8 +88,9 @@ if [[ "${1:-}" == "--purge-venv" && -d "${VENV_DIR}" ]]; then
     esac
 fi
 
+sudo systemctl restart "${KLIPPER_SERVICE}"
 sudo systemctl restart "${MOONRAKER_SERVICE}"
 
 echo "Tool Vision service and Klipper link removed."
 echo "The Tool-Vision Git checkout, learned state, results and editable config were kept."
-echo "Remove the [tool_vision] include manually before restarting Klipper."
+echo "Local pre-uninstall backup: ${BACKUP_DIR}"

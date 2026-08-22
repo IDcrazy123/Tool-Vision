@@ -7,6 +7,9 @@
 
 ### Added
 
+- `v3.3.0-rc2`: migration tests cho cài mới, nâng cấp từ layout cũ, cài lại
+  idempotent, xung đột dữ liệu và uninstall.
+- Release metadata gate tương thích parser `git_repo` của Moonraker.
 - `v3.3.0-rc1`: transform schema 2 với leave-one-out validation, pixel
   sensitivity và uncertainty evidence.
 - Camera resource bounds cho decoded pixels và OpenCV network open/read
@@ -16,6 +19,13 @@
 
 ### Changed
 
+- Config/state/result mặc định chuyển sang `printer_data/config/Printer-Setup`;
+  đường dẫn người dùng đã khai báo tường minh được giữ nguyên.
+- Installer tạo một thư mục backup local đã xác minh, copy file ToolVision còn
+  thiếu vào `Printer-Setup`, rồi in include/updater block để người dùng tự thêm;
+  không sửa `printer.cfg` hoặc `moonraker.conf`.
+- Backup công việc mới nằm trong thư mục `.local-backups/` bị Git ignore thay vì
+  branch/tag GitHub, nên không can thiệp `git describe --tags` của Moonraker.
 - Runtime detection fail-closed khi nhiều vật khác vị trí cùng khớp learned
   nozzle profile.
 - Centering tính uncertainty vào acceptance và bắt buộc frame mới phản ánh
@@ -26,6 +36,9 @@
 
 ### Fixed
 
+- Bổ sung tag semantic `v3.3.0-rc1` đúng tại production commit để Moonraker
+  không còn chọn backup tag làm version; các backup tag lịch sử vẫn được giữ
+  nguyên, không rewrite history. RC2 có gate ngăn tái diễn.
 - Không còn coi correction thiếu `move_x`/`move_y` là zero/success.
 - Không còn cửa sổ để start job trên camera cũ trong lúc configure camera mới.
 - Failed configure giữ nguyên runtime cũ và nhả cờ `configuring`.

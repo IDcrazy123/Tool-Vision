@@ -30,13 +30,17 @@ heater, camera, migration hoặc installer.
 Trước thay đổi lớn:
 
 1. worktree phải sạch;
-2. tạo annotated tag `backup/pre-<topic>-YYYYMMDD-HHMMSS` tại commit hiện tại;
-3. push tag lên remote;
+2. tạo một thư mục `.local-backups/pre-<topic>-YYYYMMDD-HHMMSS/` bị Git ignore,
+   chứa bundle/baseline và mọi file sắp sửa;
+3. không push backup branch/tag lên GitHub; Git tag chỉ dành cho semantic
+   release vì Moonraker đọc tag gần nhất làm version (ADR-0004);
 4. sao lưu dữ liệu printer theo [`BACKUP_RESTORE.md`](BACKUP_RESTORE.md) nếu sẽ
    deploy/HIL;
-5. ghi tag và backup path vào change plan.
+5. ghi đường dẫn backup local và printer backup vào change plan.
 
-Backup Git không thay thế backup state/config trên printer. Venv, Git checkout
+Các `refs/tags/backup/...` lịch sử được giữ nguyên; release semantic kế tiếp làm
+chúng không còn là tag gần nhất. Backup local không thay thế backup state/config
+trên printer. Venv, Git checkout
 và dependency cache là dữ liệu tái tạo được; config/state/result là dữ liệu cần
 bảo vệ.
 
@@ -121,6 +125,6 @@ Một task chỉ `Done` khi:
 - docs và changelog được cập nhật;
 - backup/rollback đã ghi và ít nhất dry-run hợp lệ;
 - Risk ID được cập nhật bằng link commit/evidence;
-- worktree sạch và remote branch/tag đã xác minh.
+- worktree sạch, local backup đã xác minh và remote commit/release tag phù hợp.
 
 Không dùng “chạy được một lần trên máy của tôi” thay cho Definition of Done.
