@@ -116,10 +116,10 @@ KLIPPER_DIR="${KLIPPER_DIR:-${USER_HOME}/klipper}"
 RUNTIME_DIR="${SOURCE_DIR}"
 CONFIG_DIR="${TOOL_VISION_CONFIG_DIR:-${USER_HOME}/printer_data/config}"
 DATA_DIR="${TOOL_VISION_DATA_DIR:-$(dirname -- "${CONFIG_DIR}")}"
-CONFIG_TARGET="${CONFIG_DIR}/Printer-Setup/tool_vision.cfg"
 BACKUP_ROOT="${TOOL_VISION_BACKUP_DIR:-${DATA_DIR}/config_backups/tool-vision}"
 BACKUP_DIR="${BACKUP_ROOT}/install-$(date +%Y%m%d-%H%M%S)-$$"
 PRINTER_CONFIG="${PRINTER_CONFIG:-${CONFIG_DIR}/printer.cfg}"
+CONFIG_TARGET="$(dirname -- "${PRINTER_CONFIG}")/tool_vision.cfg"
 MOONRAKER_CONFIG="${MOONRAKER_CONFIG:-${CONFIG_DIR}/moonraker.conf}"
 MOONRAKER_ALLOWED_SERVICES="${MOONRAKER_ALLOWED_SERVICES:-${DATA_DIR}/moonraker.asvc}"
 MOONRAKER_SERVICE="${MOONRAKER_SERVICE:-moonraker}"
@@ -267,7 +267,7 @@ sudo install -m 0644 "${TEMP_UNIT}" "${SERVICE_TARGET}"
 
 echo "[5/7] Backing up configuration and preparing the editable file..."
 # Machine config remains user-managed. The helper first creates a verified,
-# local backup set, then copies only missing ToolVision files into Printer-Setup.
+# local backup set, then copies only missing ToolVision files beside printer.cfg.
 # Legacy files are retained until the user changes their includes manually.
 sudo -u "${INSTALL_USER}" python3 "${RUNTIME_DIR}/scripts/config_layout.py" \
     install \
@@ -317,7 +317,7 @@ echo "Local backup created before config migration: ${BACKUP_DIR}"
 echo
 echo "Manual configuration (add each block only once):"
 echo "  Add to ${PRINTER_CONFIG}:"
-echo "[include Printer-Setup/tool_vision.cfg]"
+echo "[include tool_vision.cfg]"
 echo
 echo "  Optional: add to ${MOONRAKER_CONFIG} for Mainsail/Fluidd updates:"
 echo "[update_manager tool-vision]"

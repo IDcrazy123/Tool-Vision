@@ -111,6 +111,7 @@ Yêu cầu:
 Trên máy Klipper:
 
 ```bash
+cd ~
 git clone --recurse-submodules https://github.com/IDcrazy123/Tool-Vision.git
 cd Tool-Vision
 ./install.sh
@@ -118,22 +119,24 @@ cd Tool-Vision
 
 Installer dùng chính Git checkout `~/Tool-Vision` làm runtime, tạo venv riêng,
 service `tool-vision.service`, bốn symlink extension và file cấu hình có thể sửa
-trong `~/printer_data/config/Printer-Setup/`. Trước khi copy/migrate file,
+`tool_vision.cfg` ngay cạnh file `printer.cfg` thực tế. Trước khi copy/migrate,
 installer tạo một thư mục backup local có timestamp dưới
-`~/printer_data/config_backups/tool-vision/`; thư mục này chứa `printer.cfg`,
-`moonraker.conf` và các file ToolVision đang có.
+`<data-dir>/config_backups/tool-vision/` và in đường dẫn thực tế; thư mục này
+chứa `printer.cfg`, `moonraker.conf` và các file ToolVision đang có.
 
 Installer **không tự sửa** cấu hình máy. Sau khi chạy xong, thêm đúng một dòng
 sau vào `printer.cfg`:
 
 ```ini
-[include Printer-Setup/tool_vision.cfg]
+# printer.cfg
+[include tool_vision.cfg]
 ```
 
 Muốn cập nhật từ Mainsail/Fluidd, thêm section sau vào `moonraker.conf` (không
 thêm lặp lại nếu đã có):
 
 ```ini
+# moonraker.conf (optional)
 [update_manager tool-vision]
 type: git_repo
 channel: dev
@@ -149,12 +152,13 @@ info_tags:
 
 Các máy Mainsail/Fluidd thường đã có section `[update_manager]` cơ sở. Nếu đã
 có thì không thêm lần hai; nếu hoàn toàn chưa có, thêm một section cơ sở riêng
-theo tài liệu Moonraker. Installer vẫn sao lưu rồi thêm đúng dịch vụ
-`tool-vision` vào `~/printer_data/moonraker.asvc` để updater có quyền restart.
+theo tài liệu Moonraker. Installer vẫn sao lưu rồi đăng ký đúng dịch vụ
+`tool-vision` trong allowed-services file của data directory đang dùng để
+updater có quyền restart.
 Checkout Git và cấu hình người dùng được tách riêng, nên Moonraker yêu cầu
 repository sạch nhưng người dùng có thể sửa `tool_vision.cfg` bình thường.
 
-Sau khi lưu hai cấu hình thủ công, restart Klipper/Moonraker rồi kiểm tra:
+Sau khi lưu các khối cấu hình đã chọn, restart Klipper/Moonraker rồi kiểm tra:
 
 ```gcode
 FIRMWARE_RESTART
@@ -177,7 +181,7 @@ Không cần SSH hay chạy lại `install.sh` cho các lần cập nhật thôn
 
 Moonraker không cho update trong lúc đang in và chỉ quản lý repository sạch.
 Không sửa file bên trong `~/Tool-Vision`; mọi cấu hình cần chỉnh nằm ở
-`~/printer_data/config/Printer-Setup/tool_vision.cfg`.
+file `tool_vision.cfg` cạnh `printer.cfg`.
 
 Máy đã cài bản ToolVision dùng runtime copy cũ chỉ cần cập nhật Git thủ công và
 chạy `./install.sh` **một lần** để chuyển service/symlink sang checkout Git, rồi
@@ -187,14 +191,13 @@ Khi nâng từ ToolVision 2, installer sao lưu cấu hình mẫu cũ với hậ
 `.pre-v3-<timestamp>` trước khi đặt file tối giản mới. State schema 1 không được
 đọc như schema 2; hãy setup lại hai station để tránh dùng nhầm dữ liệu cũ.
 
-Khi nâng từ layout `config/Tool-Vision`, installer sao lưu rồi **copy** config và
-các file state/result mặc định còn thiếu sang `Printer-Setup`. Nó không sửa
-include cũ, updater hay xóa thư mục legacy. Người dùng thay dòng include cũ bằng
-`[include Printer-Setup/tool_vision.cfg]`, thay updater include cũ bằng block
-trực tiếp ở trên, restart và xác nhận `TV_STATUS`; sau đó mới tự lưu trữ/xóa
-layout cũ nếu muốn. Nếu file cũ và mới khác nhau, cả hai được giữ lại để so sánh
-thủ công. Mọi backup nằm dưới
-`~/printer_data/config_backups/tool-vision/`, không nằm trong config root.
+Khi nâng từ layout `config/Tool-Vision` hoặc `config/Printer-Setup`, installer
+sao lưu rồi **copy** config và các file state/result mặc định còn thiếu về cùng
+thư mục với `printer.cfg`. Nó không sửa include cũ, updater hay xóa thư mục
+legacy. Người dùng đổi include thành `[include tool_vision.cfg]`, restart và xác
+nhận `TV_STATUS`; sau đó mới tự lưu trữ/xóa layout cũ nếu muốn. Nếu file cũ và
+mới khác nhau, cả hai được giữ lại để so sánh thủ công. Installer luôn in đường
+dẫn backup thực tế; backup không nằm trong config root.
 
 ## Setup một lần
 
@@ -304,13 +307,13 @@ cho Z. Xem đặc tả kỹ thuật tại [`docs/ARCHITECTURE.md`](docs/ARCHITEC
 Kết quả được lưu ở:
 
 ```text
-~/printer_data/config/Printer-Setup/tool_vision_results.json
+<thư mục chứa printer.cfg>/tool_vision_results.json
 ```
 
 State học một lần được lưu riêng ở:
 
 ```text
-~/printer_data/config/Printer-Setup/tool_vision_state.json
+<thư mục chứa printer.cfg>/tool_vision_state.json
 ```
 
 Hãy chạy ít nhất ba lần, so sánh độ lặp và backup offset hiện tại trước khi áp
@@ -320,11 +323,11 @@ configured XYZ offset zero trong lúc setup/calibrate; preflight tự động ch
 kiện này nằm trong
 [lộ trình R-002](docs/RISK_REGISTER.md#r-002--reference-offset-và-station-envelope).
 
-Từ `v3.3.0-rc2`, config/state/result mặc định nằm trong `Printer-Setup/` cùng bố
-cục cấu hình máy. Installer backup rồi copy các file mặc định còn thiếu của
-v3.2.2 về đúng chỗ, nhưng giữ source legacy cho đến khi người dùng tự đổi include
-và xác minh. Các đường dẫn `state_file`/`result_file` đã đặt tường
-minh luôn được giữ nguyên.
+Từ `v3.3.0-rc2`, config/state/result mặc định nằm ngay cạnh file `printer.cfg`
+thực tế mà Klipper được khởi chạy với. Installer backup rồi copy các file mặc
+định còn thiếu của bản cũ về đúng chỗ, nhưng giữ source legacy cho đến khi người
+dùng tự đổi include và xác minh. Các đường dẫn `state_file`/`result_file` đã đặt
+tường minh luôn được giữ nguyên.
 
 `v3.3.0-rc1` nâng camera transform lên schema 2 để lưu holdout/uncertainty
 evidence. Trước khi thử RC, backup `tool_vision_state.json`; sau update phải chạy
@@ -392,7 +395,7 @@ OpenCV/NumPy không chạy trong process Klipper. Host chỉ trả quan sát; n�
 python -m unittest discover -s tests -v
 ```
 
-84 test của `v3.3.0-rc2` bao phủ camera discovery mơ hồ, URL Moonraker port 80,
+85 test của `v3.3.0-rc2` bao phủ camera discovery mơ hồ, URL Moonraker port 80,
 MJPEG/native frame, pixel/deadline bounds, profile ambiguity, focus tương đối,
 thay đổi resolution, 10-point fit/outlier/holdout/uncertainty, frozen frame, dấu
 XYZ, motion lift-first, host rehydrate/configure race, adapter toolchanger

@@ -13,13 +13,14 @@ rehydration. Branch coverage của RC được đo cùng suite đó:
 - host service modules thay đổi: camera 71%, detection 83%, transform 75%, app
   75%.
 
-Nhánh `v3.3.0-rc2` có 84 test pass ngày 2026-08-22. Mười bốn regression mới
+Nhánh `v3.3.0-rc2` có 85 test pass ngày 2026-08-22. Mười lăm regression mới
 bao phủ fresh config layout, legacy copy migration, conflict/explicit-path
-preservation, machine config không bị tự sửa, local backup, reinstall an toàn,
-manual-uninstall gate và semantic metadata mà Moonraker đọc từ `git describe`.
+preservation, đường dẫn `printer.cfg` tùy biến, machine config không bị tự sửa,
+local backup, reinstall an toàn, manual-uninstall gate và semantic metadata mà
+Moonraker đọc từ `git describe`.
 Đây là component/filesystem evidence; full
 systemd/pip image test và restore drill vẫn thuộc L4 trước stable release.
-Branch coverage cùng suite đạt 75% toàn cây; `scripts/config_layout.py` đạt 78%.
+Branch coverage cùng suite đạt 75% toàn cây; `scripts/config_layout.py` đạt 80%.
 
 Coverage thấp ở hai module điều phối safety là rủi ro, không chỉ là chỉ số style.
 Mục tiêu ngắn hạn là không giảm baseline; mục tiêu trước release stable là các

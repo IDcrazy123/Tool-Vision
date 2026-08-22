@@ -180,9 +180,13 @@ other allowed services. Uninstall stops before system changes while a manual
 Klipper include or ToolVision updater section is still present.
 
 User-owned calibration config and learned/result JSON remain under
-`printer_data/config/Printer-Setup`, outside the repository. This preserves
-Moonraker's pristine-repository invariant and follows the machine's shared
-configuration layout.
+the directory containing Klipper's actual main `printer.cfg`, outside the Git
+repository. Klippy derives this directory from
+`printer.get_start_args()['config_file']`, the same source used by
+[Klipper's official config loader](https://github.com/Klipper3d/klipper/blob/master/klippy/configfile.py),
+so custom service users and data roots do not need a ToolVision path option.
+This preserves Moonraker's
+pristine-repository invariant without imposing one machine's folder layout.
 The installer records the currently checked-out branch as `primary_branch` and
 never guesses or switches the user's channel; the printed block lets the user
 review it before saving. Installer backups are kept under

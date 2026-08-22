@@ -14,6 +14,14 @@ from .tool_vision_state import StateError, StateStore, atomic_write_json
 from .tool_vision_toolchanger import ToolchangerAdapter, ToolchangerError
 
 
+def _default_data_path(printer, filename):
+    """Place generated data beside Klipper's actual main config file."""
+    config_file = os.path.abspath(
+        os.path.expanduser(printer.get_start_args()["config_file"])
+    )
+    return os.path.join(os.path.dirname(config_file), filename)
+
+
 class ToolVisionError(RuntimeError):
     """A safe, user-facing ToolVision failure."""
 
@@ -71,16 +79,19 @@ class ToolVision:
         self.tool_select_command = config.get("tool_select_command", "T{tool}")
         self.pin = config.get("pin", None)
 
+        # Klipper exposes the actual main config path in start_args. Deriving
+        # generated-data defaults from it supports standard and custom data
+        # directories without another user setting.
         self.state_file = os.path.expanduser(
             config.get(
                 "state_file",
-                "~/printer_data/config/Printer-Setup/tool_vision_state.json",
+                _default_data_path(self.printer, "tool_vision_state.json"),
             )
         )
         self.result_file = os.path.expanduser(
             config.get(
                 "result_file",
-                "~/printer_data/config/Printer-Setup/tool_vision_results.json",
+                _default_data_path(self.printer, "tool_vision_results.json"),
             )
         )
         self.state_store = StateStore(self.state_file, self.VERSION)

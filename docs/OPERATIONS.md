@@ -22,7 +22,7 @@ ToolVision không thay thế kiểm tra cơ khí của người vận hành.
 3. Clone release/nhánh đã phê duyệt và chạy `./install.sh` trong phiên terminal
    có sudo.
 4. Ghi lại đường dẫn thư mục backup local mà installer in ra.
-5. Tự thêm `[include Printer-Setup/tool_vision.cfg]` vào `printer.cfg`; nếu muốn
+5. Tự thêm `[include tool_vision.cfg]` vào `printer.cfg`; nếu muốn
    update trên UI, copy updater block installer in ra vào `moonraker.conf`.
 6. Restart Klipper/Moonraker, chạy `TV_STATUS`, kiểm tra API health và updater
    `tool-vision` xuất hiện trong Mainsail.
@@ -48,8 +48,9 @@ sạch để Moonraker quản lý đúng.
 
 Đây là release candidate thay đổi detector/transform, chưa phải stable đa phần
 cứng. Trước update, backup tối thiểu config và
-`Printer-Setup/tool_vision_state.json`. Transform schema 1 của `v3.2.2` không có
-uncertainty/holdout evidence và không được chuyển đổi bằng cách đoán; sau update
+`tool_vision_state.json` cạnh `printer.cfg`. Transform schema 1 của `v3.2.2`
+không có uncertainty/holdout evidence và không được chuyển đổi bằng cách đoán;
+sau update
 phải gắn reference tool, kiểm tra đường ±0,5 mm rồi chạy lại
 `TV_SETUP_CAMERA`. Switch station/Z state không bị schema camera này thay đổi.
 Không rollout ra máy khác trước khi canary HIL pass.
@@ -59,16 +60,16 @@ Không rollout ra máy khác trước khi canary HIL pass.
 Chạy `./install.sh` một lần trên máy idle để chuyển từ layout cũ. Installer:
 
 1. backup `printer.cfg`, `moonraker.conf` và mọi file ToolVision tìm thấy dưới
-   `printer_data/config_backups/tool-vision`;
-2. giữ nguyên config đã có tại `Printer-Setup/tool_vision.cfg`, hoặc copy config
-   legacy sang đó khi destination chưa tồn tại;
+   `<data-dir>/config_backups/tool-vision`;
+2. giữ nguyên `tool_vision.cfg` cạnh `printer.cfg`, hoặc copy config legacy về
+   đó khi destination chưa tồn tại;
 3. copy state/result mặc định còn thiếu khi không có đường dẫn tường minh và
    không có
    xung đột;
 4. không sửa `printer.cfg`, `moonraker.conf` hoặc xóa artifact legacy.
 
 Người vận hành tự thay include cũ bằng
-`[include Printer-Setup/tool_vision.cfg]`, thay updater include cũ bằng block
+`[include tool_vision.cfg]`, thay updater include cũ bằng block
 trực tiếp được in ra, restart rồi kiểm tra health. Nếu file cũ và mới khác nhau,
 installer cảnh báo và giữ cả hai. Không xóa thủ công layout cũ trước khi so sánh
 backup và xác định file đang được runtime dùng.

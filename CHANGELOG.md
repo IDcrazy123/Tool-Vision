@@ -19,10 +19,11 @@
 
 ### Changed
 
-- Config/state/result mặc định chuyển sang `printer_data/config/Printer-Setup`;
-  đường dẫn người dùng đã khai báo tường minh được giữ nguyên.
+- Config/state/result mặc định chuyển về cùng thư mục với `printer.cfg` thực tế;
+  không hard-code `printer_data` hoặc layout riêng của một máy, và đường dẫn
+  người dùng đã khai báo tường minh được giữ nguyên.
 - Installer tạo một thư mục backup local đã xác minh, copy file ToolVision còn
-  thiếu vào `Printer-Setup`, rồi in include/updater block để người dùng tự thêm;
+  thiếu về cạnh `printer.cfg`, rồi in include/updater block để người dùng tự thêm;
   không sửa `printer.cfg` hoặc `moonraker.conf`.
 - Backup công việc mới nằm trong thư mục `.local-backups/` bị Git ignore thay vì
   branch/tag GitHub, nên không can thiệp `git describe --tags` của Moonraker.

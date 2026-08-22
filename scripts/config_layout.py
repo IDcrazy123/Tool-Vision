@@ -17,10 +17,10 @@ import stat
 import sys
 import tempfile
 
-KLIPPER_INCLUDE = "[include Printer-Setup/tool_vision.cfg]"
+KLIPPER_INCLUDE = "[include tool_vision.cfg]"
 
 _TOOLVISION_CFG_INCLUDE_RE = re.compile(
-    r"^[ \t]*\[include[ \t]+(?:Tool-Vision|Printer-Setup)/"
+    r"^[ \t]*\[include[ \t]+(?:(?:Tool-Vision|Printer-Setup)/)?"
     r"tool_vision\.cfg\][ \t]*(?:[#;].*)?$",
     re.IGNORECASE | re.MULTILINE,
 )
@@ -166,6 +166,7 @@ def _printer_loads_toolvision(content):
     if _TOOLVISION_CFG_INCLUDE_RE.search(content):
         return True
     targets = (
+        "tool_vision.cfg",
         "Printer-Setup/tool_vision.cfg",
         "Tool-Vision/tool_vision.cfg",
     )
@@ -192,14 +193,15 @@ def _prepare_install_layout(
     _read_text(printer_config)
     _read_text(moonraker_config)
 
-    new_dir = config_dir / "Printer-Setup"
-    if new_dir.exists() and not new_dir.is_dir():
-        raise LayoutError("Printer-Setup target is not a directory: %s" % new_dir)
-    config_target = new_dir / "tool_vision.cfg"
+    # Follow the actual main Klipper config instead of assuming a particular
+    # Moonraker data layout. This also keeps the documented relative include
+    # valid when PRINTER_CONFIG points at a custom location.
+    target_dir = printer_config.parent
+    config_target = target_dir / "tool_vision.cfg"
     if config_target.exists() and not config_target.is_file():
         raise LayoutError("editable config target is not a file: %s" % config_target)
     for filename in ("tool_vision_state.json", "tool_vision_results.json"):
-        generated_target = new_dir / filename
+        generated_target = target_dir / filename
         if generated_target.exists() and not generated_target.is_file():
             raise LayoutError(
                 "generated data target is not a file: %s" % generated_target
@@ -210,7 +212,7 @@ def _prepare_install_layout(
         "config_source": config_source,
         "printer_config": printer_config,
         "moonraker_config": moonraker_config,
-        "new_dir": new_dir,
+        "target_dir": target_dir,
         "config_target": config_target,
     }
 
@@ -228,25 +230,38 @@ def _backup_layout(prepared):
     """Back up every user file in scope before migration copies start."""
     config_dir = prepared["config_dir"]
     backup_dir = prepared["backup_dir"]
-    new_dir = prepared["new_dir"]
+    target_dir = prepared["target_dir"]
+    printer_setup_dir = config_dir / "Printer-Setup"
     legacy_dir = config_dir / "Tool-Vision"
-    candidates = (
+    candidates = [
         (prepared["printer_config"], pathlib.Path("machine-config/printer.cfg")),
         (
             prepared["moonraker_config"],
             pathlib.Path("machine-config/moonraker.conf"),
         ),
         (
-            new_dir / "tool_vision.cfg",
-            pathlib.Path("current/Printer-Setup/tool_vision.cfg"),
+            target_dir / "tool_vision.cfg",
+            pathlib.Path("current/tool_vision.cfg"),
         ),
         (
-            new_dir / "tool_vision_state.json",
-            pathlib.Path("current/Printer-Setup/tool_vision_state.json"),
+            target_dir / "tool_vision_state.json",
+            pathlib.Path("current/tool_vision_state.json"),
         ),
         (
-            new_dir / "tool_vision_results.json",
-            pathlib.Path("current/Printer-Setup/tool_vision_results.json"),
+            target_dir / "tool_vision_results.json",
+            pathlib.Path("current/tool_vision_results.json"),
+        ),
+        (
+            printer_setup_dir / "tool_vision.cfg",
+            pathlib.Path("legacy/Printer-Setup/tool_vision.cfg"),
+        ),
+        (
+            printer_setup_dir / "tool_vision_state.json",
+            pathlib.Path("legacy/Printer-Setup/tool_vision_state.json"),
+        ),
+        (
+            printer_setup_dir / "tool_vision_results.json",
+            pathlib.Path("legacy/Printer-Setup/tool_vision_results.json"),
         ),
         (
             legacy_dir / "tool_vision.cfg",
@@ -264,15 +279,19 @@ def _backup_layout(prepared):
             legacy_dir / "moonraker_update_manager.conf",
             pathlib.Path("legacy/Tool-Vision/moonraker_update_manager.conf"),
         ),
-        (
-            config_dir / "tool_vision_state.json",
-            pathlib.Path("legacy/config-root/tool_vision_state.json"),
-        ),
-        (
-            config_dir / "tool_vision_results.json",
-            pathlib.Path("legacy/config-root/tool_vision_results.json"),
-        ),
-    )
+    ]
+    if target_dir != config_dir:
+        for filename in (
+            "tool_vision.cfg",
+            "tool_vision_state.json",
+            "tool_vision_results.json",
+        ):
+            candidates.append(
+                (
+                    config_dir / filename,
+                    pathlib.Path("legacy/config-root") / filename,
+                )
+            )
     for source, relative in candidates:
         if source.is_file():
             _backup_file(source, backup_dir, relative)
@@ -307,12 +326,17 @@ def install_layout(
     _backup_layout(prepared)
 
     config_dir = prepared["config_dir"]
-    new_dir = prepared["new_dir"]
+    target_dir = prepared["target_dir"]
     config_target = prepared["config_target"]
-    legacy_dir = config_dir / "Tool-Vision"
-    if not _copy_legacy_if_absent(
-        legacy_dir / "tool_vision.cfg", config_target
-    ) and not config_target.exists():
+    legacy_dirs = [
+        config_dir / "Printer-Setup",
+        config_dir / "Tool-Vision",
+    ]
+    if target_dir != config_dir:
+        legacy_dirs.append(config_dir)
+    for legacy_dir in legacy_dirs:
+        _copy_legacy_if_absent(legacy_dir / "tool_vision.cfg", config_target)
+    if not config_target.exists():
         _copy_atomic(prepared["config_source"], config_target)
     if not config_target.is_file():
         raise LayoutError("editable config was not created: %s" % config_target)
@@ -324,9 +348,9 @@ def install_layout(
     for option, filename in generated:
         if _has_explicit_option(config_target, option):
             continue
-        target = new_dir / filename
-        for source in (legacy_dir / filename, config_dir / filename):
-            _copy_legacy_if_absent(source, target)
+        target = target_dir / filename
+        for legacy_dir in legacy_dirs:
+            _copy_legacy_if_absent(legacy_dir / filename, target)
 
     # Legacy files remain because printer.cfg/moonraker.conf are user-managed.
     # The README explains when they may be removed after manual include changes.
@@ -349,16 +373,16 @@ def prepare_uninstall(config_dir, printer_config, moonraker_config, backup_dir):
     _backup_file(
         moonraker_config, backup_dir, pathlib.Path("machine-config/moonraker.conf")
     )
-    new_dir = config_dir / "Printer-Setup"
+    target_dir = printer_config.parent
     for filename in (
         "tool_vision.cfg",
         "tool_vision_state.json",
         "tool_vision_results.json",
     ):
-        source = new_dir / filename
+        source = target_dir / filename
         if source.is_file():
             _backup_file(
-                source, backup_dir, pathlib.Path("current/Printer-Setup") / filename
+                source, backup_dir, pathlib.Path("current") / filename
             )
 
     remaining = []

@@ -5,21 +5,24 @@
 | Dữ liệu | Mặc định | Chủ sở hữu | Tái tạo được? | Backup |
 |---|---|---|---|---|
 | Git runtime | `~/Tool-Vision` | Git/Moonraker | Có | release tag + local bundle |
-| Editable config | `~/printer_data/config/Printer-Setup/tool_vision.cfg` | người dùng | Không | bắt buộc |
-| Learned state | `~/printer_data/config/Printer-Setup/tool_vision_state.json` | ToolVision | Có nhưng tốn setup/HIL | bắt buộc |
-| Latest result | `~/printer_data/config/Printer-Setup/tool_vision_results.json` | ToolVision | Có nhưng không tái tạo đúng điều kiện cũ | bắt buộc trước apply |
-| Host log | `~/printer_data/logs/tool-vision/tool-vision.log` | service | Có thể bỏ | theo incident/retention |
+| Editable config | `<config-dir>/tool_vision.cfg` | người dùng | Không | bắt buộc |
+| Learned state | `<config-dir>/tool_vision_state.json` | ToolVision | Có nhưng tốn setup/HIL | bắt buộc |
+| Latest result | `<config-dir>/tool_vision_results.json` | ToolVision | Có nhưng không tái tạo đúng điều kiện cũ | bắt buộc trước apply |
+| Host log | `<data-dir>/logs/tool-vision/tool-vision.log` | service | Có thể bỏ | theo incident/retention |
 | Venv | `~/tool-vision-env` | pip/Moonraker | Có | không backup bình thường |
 | Systemd unit | `/etc/systemd/system/tool-vision.service` | installer | Có từ template | lưu manifest |
 | Moonraker updater block | `[update_manager tool-vision]` trực tiếp trong `moonraker.conf` | người dùng | Có | backup cùng config |
-| Allowed services | `~/printer_data/moonraker.asvc` | Moonraker + installer | Không nên dựng thủ công | backup trước sửa |
-| Installer backups | `~/printer_data/config_backups/tool-vision/` | installer | Không | giữ đến restore drill |
+| Allowed services | `<data-dir>/moonraker.asvc` | Moonraker + installer | Không nên dựng thủ công | backup trước sửa |
+| Installer backups | `<data-dir>/config_backups/tool-vision/` | installer | Không | giữ đến restore drill |
 
+`<config-dir>` là thư mục của `config_file` trong Klipper start arguments;
+`<data-dir>` do installer suy ra từ config directory hoặc nhận qua environment.
 `~` là home của user chạy Klipper, không được hard-code `voron` trong logic.
 Hai file JSON mặc định nằm ở root `config/` trong v3.2.1 và cũ hơn, rồi nằm
-trong `Tool-Vision/` ở v3.2.2/RC1. Installer RC2 backup rồi copy các default còn
-thiếu vào `Printer-Setup/`; đường dẫn được người dùng khai báo tường minh không
-bị copy. File legacy luôn được giữ để include thủ công cũ tiếp tục hoạt động cho
+trong `Tool-Vision/` ở v3.2.2/RC1; một nhánh RC ngắn hạn từng dùng
+`Printer-Setup/`. Installer RC2 backup rồi copy các default còn thiếu về thư mục
+chứa main `printer.cfg`; đường dẫn được người dùng khai báo tường minh không bị
+copy. File legacy luôn được giữ để include thủ công cũ tiếp tục hoạt động cho
 đến khi người dùng đổi cấu hình và tự dọn sau khi xác minh.
 
 ## Schema hiện tại
@@ -89,7 +92,7 @@ result trong session Klipper hiện tại.
 R-009/R-015 cần chuyển từ “latest only” sang:
 
 ```text
-printer_data/config/Printer-Setup/
+<directory-containing-printer.cfg>/
   tool_vision.cfg
   tool_vision_state.json
   tool-vision-history/

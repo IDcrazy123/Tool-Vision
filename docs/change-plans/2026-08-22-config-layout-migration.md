@@ -1,13 +1,16 @@
-# Change plan — migrate config layout to Printer-Setup
+# Change plan — place ToolVision beside printer.cfg
 
 - Owner: ToolVision maintainers / Codex
 - Date: 2026-08-22
 - Baseline commit/version: `5e79f633ab5b33998d8e1afa64a638386f1bc59b` / `v3.3.0-rc1`
 - Risk IDs: R-007, R-009
 - Issue/PR: branch `codex/config-layout-migration`
-- Local backup directory: `.local-backups/20260822-1930-manual-config-workflow/`
-  (the earlier remote tag `backup/pre-config-layout-migration-20260822-184537`
-  is historical and will not be repeated).
+- Local backup directories:
+  `.local-backups/20260822-1930-manual-config-workflow/` and
+  `.local-backups/20260822-2030-universal-config-root/` (verified Git bundle
+  plus 14 source/document files). The earlier remote tag
+  `backup/pre-config-layout-migration-20260822-184537` is historical and will
+  not be repeated.
 - Printer backup path/checksum: not applicable during repository-only work; the
   installer must create timestamped copies below
   `${DATA_DIR}/config_backups/tool-vision` before changing printer files.
@@ -25,7 +28,8 @@ include migration.
 ## Desired behavior
 
 - Fresh install creates/preserves
-  `${CONFIG_DIR}/Printer-Setup/tool_vision.cfg`, creates a verified local backup
+  `tool_vision.cfg` in the directory containing the actual `PRINTER_CONFIG`,
+  creates a verified local backup
   directory, and prints the exact Klipper include for manual copy/paste.
 - The optional `[update_manager tool-vision]` block is printed for manual review
   and addition to `moonraker.conf`; installer does not edit either machine
@@ -48,7 +52,7 @@ include migration.
   default config layout, while explicit user paths remain untouched.
 - User workflow: Mainsail updates continue to operate on the persistent Git
   runtime after the user adds the displayed updater block; normal config is
-  under `Printer-Setup` and machine config ownership remains explicit.
+  beside `printer.cfg` and machine config ownership remains explicit.
 
 ## Design/options
 
@@ -97,7 +101,10 @@ deleted by install/uninstall and therefore remains independently recoverable.
 
 - Local backup before the manual-workflow redesign:
   `.local-backups/20260822-1930-manual-config-workflow/` (29 files, Git ignored).
-- Windows local: 84/84 `unittest` pass; branch coverage 75% overall and 78% for
+- Local backup before replacing the machine-specific `Printer-Setup` default:
+  `.local-backups/20260822-2030-universal-config-root/` (verified complete Git
+  bundle plus 14 relevant files, Git ignored).
+- Windows local: 85/85 `unittest` pass; branch coverage 75% overall and 80% for
   `scripts/config_layout.py`; focused Ruff `E/F/I`, `compileall` and
   `git diff --check` pass; `pip-audit` reports no known requirement
   vulnerabilities.

@@ -2,7 +2,7 @@ import configparser
 import pathlib
 import unittest
 
-from klippy.extras.tool_vision import ToolVision
+from klippy.extras.tool_vision import ToolVision, _default_data_path
 from scripts.config_layout import render_updater_block
 from server import __version__
 from server.app import VERSION as SERVER_VERSION
@@ -68,15 +68,24 @@ class RewriteContracts(unittest.TestCase):
         self.assertNotIn("SET_TOOL_PARAMETER", source)
         self.assertNotIn("SAVE_CONFIG", source)
 
-    def test_default_generated_files_stay_inside_printer_setup_dir(self):
+    def test_default_generated_files_follow_main_config_directory(self):
         source = (PROJECT / "klippy" / "extras" / "tool_vision.py").read_text(
             encoding="utf-8"
         )
         sample = (PROJECT / "tool_vision.cfg").read_text(encoding="utf-8")
-        for filename in ("tool_vision_state.json", "tool_vision_results.json"):
-            expected = "~/printer_data/config/Printer-Setup/%s" % filename
-            self.assertIn(expected, source)
-            self.assertIn(expected, sample)
+
+        class FakePrinter:
+            def get_start_args(self):
+                return {"config_file": str(PROJECT / "tests" / "printer.cfg")}
+
+        self.assertEqual(
+            _default_data_path(FakePrinter(), "tool_vision_state.json"),
+            str(PROJECT / "tests" / "tool_vision_state.json"),
+        )
+        self.assertIn('get_start_args()["config_file"]', source)
+        self.assertIn(
+            "default to the directory containing the main printer.cfg", sample
+        )
 
     def test_installer_links_modules_and_registers_moonraker_runtime(self):
         installer = (PROJECT / "install.sh").read_text(encoding="utf-8")
@@ -89,7 +98,10 @@ class RewriteContracts(unittest.TestCase):
         self.assertIn('systemctl restart "${SERVICE_NAME}"', installer)
         self.assertIn('RUNTIME_DIR="${SOURCE_DIR}"', installer)
         self.assertIn("scripts/config_layout.py", installer)
-        self.assertIn("/Printer-Setup/tool_vision.cfg", installer)
+        self.assertIn(
+            'CONFIG_TARGET="$(dirname -- "${PRINTER_CONFIG}")/tool_vision.cfg"',
+            installer,
+        )
         self.assertNotIn("moonraker_update_manager.conf.in", installer)
         self.assertIn('systemctl restart "${MOONRAKER_SERVICE}"', installer)
         self.assertIn("git clone --branch", installer)
@@ -101,7 +113,7 @@ class RewriteContracts(unittest.TestCase):
         self.assertIn('"${RUNTIME_DIR}/scripts/config_layout.py"', installer)
         self.assertIn("--check-only", installer)
         self.assertIn("Manual configuration (add each block only once)", installer)
-        self.assertIn("[include Printer-Setup/tool_vision.cfg]", installer)
+        self.assertIn("[include tool_vision.cfg]", installer)
         self.assertIn("[update_manager tool-vision]", installer)
 
         uninstaller = (PROJECT / "uninstall.sh").read_text(encoding="utf-8")

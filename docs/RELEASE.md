@@ -13,7 +13,8 @@ release phải kiểm tra tất cả nơi khai báo.
 ## Trước khi merge release
 
 - [ ] Scope/issue/Risk ID rõ.
-- [ ] Backup tag trước thay đổi đã push.
+- [ ] Backup local `.local-backups/` trước thay đổi đã tạo và xác minh; không
+      push backup branch/tag.
 - [ ] Change plan và rollback được review.
 - [ ] Code review đã kiểm tra motion/heat/data/deployment impact.
 - [ ] Changelog, README và tài liệu liên quan cập nhật.

@@ -58,6 +58,7 @@ backup_root="${printer_data}/config_backups/tool-vision/manual-${stamp}"
 # Thu cả layout hiện tại và các path legacy nếu migration chưa hoàn tất.
 install -d -m 0750 "${backup_root}"
 for source_path in \
+  "${printer_data}/config/tool_vision.cfg" \
   "${printer_data}/config/Printer-Setup" \
   "${printer_data}/config/Tool-Vision" \
   "${printer_data}/config/tool_vision_state.json" \

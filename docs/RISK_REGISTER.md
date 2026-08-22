@@ -173,9 +173,10 @@ chứng đóng.
   liệu cũ trước khi người dùng kịp khôi phục.
 - Giải pháp: backup-on-write có retention, migration có version/test, quarantine
   file lỗi, append-only run history và export gọn cho support.
-- Giảm thiểu `v3.3.0-rc2`: default config/state/result chuyển sang
-  `Printer-Setup`; migration backup và kiểm tra checksum rồi chỉ copy destination
-  còn thiếu, giữ nguyên source, explicit path, file xung đột và file lạ.
+- Giảm thiểu `v3.3.0-rc2`: default config/state/result nằm cạnh main
+  `printer.cfg` được Klipper cung cấp; migration backup và kiểm tra checksum rồi
+  chỉ copy destination còn thiếu, giữ nguyên source, explicit path, file xung
+  đột và file lạ.
   History/quarantine và power-loss/restore drill vẫn chưa triển khai đầy đủ.
 - Đóng khi: migration/rollback qua ít nhất hai schema, power-loss simulation và
   restore drill đều có bằng chứng.
