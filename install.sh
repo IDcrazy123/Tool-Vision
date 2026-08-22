@@ -6,14 +6,10 @@ SOURCE_DIR="${TOOL_VISION_SOURCE_DIR:-${SCRIPT_DIR}}"
 GIT_ORIGIN_URL="${TOOL_VISION_GIT_ORIGIN:-https://github.com/IDcrazy123/Tool-Vision.git}"
 GIT_BOOTSTRAP_BRANCH="${TOOL_VISION_GIT_BRANCH:-main}"
 TEMP_UNIT=""
-TEMP_UPDATE_CONFIG=""
 
 cleanup() {
     if [[ -n "${TEMP_UNIT}" && -f "${TEMP_UNIT}" ]]; then
         rm -f -- "${TEMP_UNIT}"
-    fi
-    if [[ -n "${TEMP_UPDATE_CONFIG}" && -f "${TEMP_UPDATE_CONFIG}" ]]; then
-        rm -f -- "${TEMP_UPDATE_CONFIG}"
     fi
 }
 trap cleanup EXIT
@@ -22,7 +18,7 @@ source_is_complete() {
     [[ -f "$1/klippy/extras/tool_vision.py" ]] &&
         [[ -f "$1/server/requirements.txt" ]] &&
         [[ -f "$1/server/tool-vision.service.in" ]] &&
-        [[ -f "$1/moonraker_update_manager.conf.in" ]] &&
+        [[ -f "$1/scripts/config_layout.py" ]] &&
         [[ -f "$1/tool_vision.cfg" ]] &&
         [[ -f "$1/uninstall.sh" ]]
 }
@@ -99,34 +95,13 @@ backup_user_file() {
     fi
     sudo -u "${INSTALL_USER}" mkdir -p -- "$(dirname -- "${backup_path}")"
     sudo -u "${INSTALL_USER}" cp -a -- "${source_path}" "${backup_path}"
-}
-
-migrate_legacy_data_file() {
-    local config_option="$1"
-    local legacy_path="$2"
-    local target_path="$3"
-
-    # An explicit path is user-owned and must never be moved automatically.
-    if grep -Eq "^[[:space:]]*${config_option}[[:space:]]*[:=]" \
-        "${CONFIG_TARGET}"; then
-        return
-    fi
-    if [[ -e "${legacy_path}" && ! -e "${target_path}" ]]; then
-        backup_user_file "${legacy_path}" \
-            "legacy-runtime/$(basename -- "${legacy_path}")"
-        sudo -u "${INSTALL_USER}" mkdir -p -- "$(dirname -- "${target_path}")"
-        sudo -u "${INSTALL_USER}" mv -- "${legacy_path}" "${target_path}"
-        echo "  Migrated generated data to ${target_path}"
-    elif [[ -e "${legacy_path}" && -e "${target_path}" ]]; then
-        echo "WARNING: legacy and current generated files both exist:" >&2
-        echo "  ${legacy_path}" >&2
-        echo "  ${target_path}" >&2
-        echo "Preserving both; compare them before manual cleanup." >&2
+    if ! cmp -s -- "${source_path}" "${backup_path}"; then
+        echo "ERROR: backup verification failed: ${backup_path}" >&2
+        exit 1
     fi
 }
 
 INSTALL_USER="${TOOL_VISION_USER:-${SUDO_USER:-$(id -un)}}"
-INSTALL_GROUP="$(id -gn "${INSTALL_USER}")"
 USER_HOME="$(getent passwd "${INSTALL_USER}" | cut -d: -f6)"
 
 # Validate privilege escalation before cloning or changing any user/system files.
@@ -141,13 +116,12 @@ KLIPPER_DIR="${KLIPPER_DIR:-${USER_HOME}/klipper}"
 RUNTIME_DIR="${SOURCE_DIR}"
 CONFIG_DIR="${TOOL_VISION_CONFIG_DIR:-${USER_HOME}/printer_data/config}"
 DATA_DIR="${TOOL_VISION_DATA_DIR:-$(dirname -- "${CONFIG_DIR}")}"
-CONFIG_TARGET="${CONFIG_DIR}/Tool-Vision/tool_vision.cfg"
+CONFIG_TARGET="${CONFIG_DIR}/Printer-Setup/tool_vision.cfg"
 BACKUP_ROOT="${TOOL_VISION_BACKUP_DIR:-${DATA_DIR}/config_backups/tool-vision}"
-BACKUP_DIR="${BACKUP_ROOT}/install-$(date +%Y%m%d-%H%M%S)"
+BACKUP_DIR="${BACKUP_ROOT}/install-$(date +%Y%m%d-%H%M%S)-$$"
+PRINTER_CONFIG="${PRINTER_CONFIG:-${CONFIG_DIR}/printer.cfg}"
 MOONRAKER_CONFIG="${MOONRAKER_CONFIG:-${CONFIG_DIR}/moonraker.conf}"
 MOONRAKER_ALLOWED_SERVICES="${MOONRAKER_ALLOWED_SERVICES:-${DATA_DIR}/moonraker.asvc}"
-MOONRAKER_UPDATE_CONFIG="${CONFIG_DIR}/Tool-Vision/moonraker_update_manager.conf"
-MOONRAKER_INCLUDE="[include Tool-Vision/moonraker_update_manager.conf]"
 MOONRAKER_SERVICE="${MOONRAKER_SERVICE:-moonraker}"
 VENV_DIR="${TOOL_VISION_VENV:-${USER_HOME}/tool-vision-env}"
 SERVICE_NAME="tool-vision.service"
@@ -194,8 +168,8 @@ require_file "${SOURCE_DIR}/server/camera.py"
 require_file "${SOURCE_DIR}/server/detection.py"
 require_file "${SOURCE_DIR}/server/requirements.txt"
 require_file "${SOURCE_DIR}/server/tool-vision.service.in"
-require_file "${SOURCE_DIR}/moonraker_update_manager.conf.in"
 require_file "${SOURCE_DIR}/server/transform.py"
+require_file "${SOURCE_DIR}/scripts/config_layout.py"
 require_file "${SOURCE_DIR}/tool_vision.cfg"
 require_file "${SOURCE_DIR}/install.sh"
 require_file "${SOURCE_DIR}/uninstall.sh"
@@ -215,6 +189,11 @@ if [[ ! -f "${MOONRAKER_CONFIG}" ]]; then
     echo "Set MOONRAKER_CONFIG=/actual/path and run this installer again." >&2
     exit 1
 fi
+if [[ ! -f "${PRINTER_CONFIG}" ]]; then
+    echo "ERROR: Klipper config not found at ${PRINTER_CONFIG}." >&2
+    echo "Set PRINTER_CONFIG=/actual/path and run this installer again." >&2
+    exit 1
+fi
 if [[ ! -f "${MOONRAKER_ALLOWED_SERVICES}" ]]; then
     echo "ERROR: Moonraker allowed-services file not found at ${MOONRAKER_ALLOWED_SERVICES}." >&2
     echo "Start Moonraker once, or set TOOL_VISION_DATA_DIR to its actual data directory." >&2
@@ -224,6 +203,17 @@ if ! command -v python3 >/dev/null 2>&1; then
     echo "ERROR: python3 is required." >&2
     exit 1
 fi
+
+# Validate config parsing, target types and backup placement before the first
+# runtime, dependency, symlink or systemd write.
+sudo -u "${INSTALL_USER}" python3 "${RUNTIME_DIR}/scripts/config_layout.py" \
+    install \
+    --check-only \
+    --config-dir "${CONFIG_DIR}" \
+    --config-source "${RUNTIME_DIR}/tool_vision.cfg" \
+    --printer-config "${PRINTER_CONFIG}" \
+    --moonraker-config "${MOONRAKER_CONFIG}" \
+    --backup-dir "${BACKUP_DIR}"
 
 echo "[1/7] Using the persistent Git runtime on the printer..."
 install_runtime_file "${SOURCE_DIR}/install.sh" "${RUNTIME_DIR}/install.sh" 0755
@@ -239,30 +229,6 @@ for server_file in __init__.py app.py camera.py detection.py requirements.txt \
     install_runtime_file "${SOURCE_DIR}/server/${server_file}" \
         "${RUNTIME_DIR}/server/${server_file}"
 done
-
-sudo -u "${INSTALL_USER}" mkdir -p -- "$(dirname -- "${CONFIG_TARGET}")"
-if [[ ! -e "${CONFIG_TARGET}" ]]; then
-    install_runtime_file "${RUNTIME_DIR}/tool_vision.cfg" "${CONFIG_TARGET}"
-    echo "  Created the editable config at ${CONFIG_TARGET}"
-elif grep -Eq '^# Tool( )?Vision 2' "${CONFIG_TARGET}"; then
-    CONFIG_BACKUP="${BACKUP_DIR}/config/tool_vision.cfg.pre-v3"
-    backup_user_file "${CONFIG_TARGET}" "config/tool_vision.cfg.pre-v3"
-    sudo -u "${INSTALL_USER}" install -m 0644 \
-        "${RUNTIME_DIR}/tool_vision.cfg" "${CONFIG_TARGET}"
-    echo "  Migrated generated v2 config; backup: ${CONFIG_BACKUP}"
-else
-    echo "  Preserved the existing editable config at ${CONFIG_TARGET}"
-fi
-
-# ToolVision 3.2.1 and older placed generated JSON in the config root. Keep
-# explicit user paths untouched; otherwise move legacy files beside the
-# editable ToolVision config and retain a timestamped backup.
-migrate_legacy_data_file "state_file" \
-    "${CONFIG_DIR}/tool_vision_state.json" \
-    "${CONFIG_DIR}/Tool-Vision/tool_vision_state.json"
-migrate_legacy_data_file "result_file" \
-    "${CONFIG_DIR}/tool_vision_results.json" \
-    "${CONFIG_DIR}/Tool-Vision/tool_vision_results.json"
 
 echo "[2/7] Creating/updating the isolated host-service environment..."
 if [[ ! -x "${VENV_DIR}/bin/python" ]]; then
@@ -299,31 +265,19 @@ sed \
     "${RUNTIME_DIR}/server/tool-vision.service.in" > "${TEMP_UNIT}"
 sudo install -m 0644 "${TEMP_UNIT}" "${SERVICE_TARGET}"
 
-echo "[5/7] Registering ToolVision with Moonraker Update Manager..."
-TEMP_UPDATE_CONFIG="$(mktemp)"
-sed \
-    -e "s|@REPO_DIR@|$(escape_sed "${RUNTIME_DIR}")|g" \
-    -e "s|@ORIGIN@|$(escape_sed "${UPDATE_ORIGIN}")|g" \
-    -e "s|@PRIMARY_BRANCH@|$(escape_sed "${UPDATE_BRANCH}")|g" \
-    -e "s|@VIRTUALENV@|$(escape_sed "${VENV_DIR}")|g" \
-    "${RUNTIME_DIR}/moonraker_update_manager.conf.in" > "${TEMP_UPDATE_CONFIG}"
-sudo -u "${INSTALL_USER}" install -D -m 0644 \
-    "${TEMP_UPDATE_CONFIG}" "${MOONRAKER_UPDATE_CONFIG}"
-
-# Moonraker supports Klipper-style includes. Keep the generated updater section
-# separate from moonraker.conf so reinstalling never rewrites user-owned options.
-if ! grep -Eq \
-    '^[[:space:]]*\[include[[:space:]]+Tool-Vision/(moonraker_update_manager\.conf|\*\.conf)\][[:space:]]*(#.*)?$' \
-    "${MOONRAKER_CONFIG}"; then
-    MOONRAKER_BACKUP="${BACKUP_DIR}/config/moonraker.conf"
-    backup_user_file "${MOONRAKER_CONFIG}" "config/moonraker.conf"
-    printf '\n# ToolVision updater (managed by ToolVision install.sh)\n%s\n' \
-        "${MOONRAKER_INCLUDE}" | \
-        sudo -u "${INSTALL_USER}" tee -a "${MOONRAKER_CONFIG}" >/dev/null
-    echo "  Added ${MOONRAKER_INCLUDE}; backup: ${MOONRAKER_BACKUP}"
-else
-    echo "  Moonraker include already present"
-fi
+echo "[5/7] Backing up configuration and preparing the editable file..."
+# Machine config remains user-managed. The helper first creates a verified,
+# local backup set, then copies only missing ToolVision files into Printer-Setup.
+# Legacy files are retained until the user changes their includes manually.
+sudo -u "${INSTALL_USER}" python3 "${RUNTIME_DIR}/scripts/config_layout.py" \
+    install \
+    --config-dir "${CONFIG_DIR}" \
+    --config-source "${RUNTIME_DIR}/tool_vision.cfg" \
+    --printer-config "${PRINTER_CONFIG}" \
+    --moonraker-config "${MOONRAKER_CONFIG}" \
+    --backup-dir "${BACKUP_DIR}"
+echo "  Editable config: ${CONFIG_TARGET}"
+echo "  Local backup: ${BACKUP_DIR}"
 
 # Current Moonraker releases require third-party services to be explicitly
 # authorized before Update Manager may restart them. Preserve the generated
@@ -356,16 +310,34 @@ sudo systemctl restart klipper
 sudo systemctl restart "${MOONRAKER_SERVICE}"
 
 echo
-echo "Installation complete. Moonraker now manages this Git checkout."
+echo "Installation complete. The Git runtime and editable config are ready."
 echo "Git runtime: ${RUNTIME_DIR}"
 echo "Editable Mainsail config: ${CONFIG_TARGET}"
-echo "Moonraker updater config: ${MOONRAKER_UPDATE_CONFIG}"
+echo "Local backup created before config migration: ${BACKUP_DIR}"
+echo
+echo "Manual configuration (add each block only once):"
+echo "  Add to ${PRINTER_CONFIG}:"
+echo "[include Printer-Setup/tool_vision.cfg]"
+echo
+echo "  Optional: add to ${MOONRAKER_CONFIG} for Mainsail/Fluidd updates:"
+echo "[update_manager tool-vision]"
+echo "type: git_repo"
+echo "channel: dev"
+echo "path: ${RUNTIME_DIR}"
+echo "origin: ${UPDATE_ORIGIN}"
+echo "primary_branch: ${UPDATE_BRANCH}"
+echo "virtualenv: ${VENV_DIR}"
+echo "requirements: server/requirements.txt"
+echo "managed_services: tool-vision klipper"
+echo "info_tags:"
+echo "  desc=ToolVision automatic XYZ tool-offset calibration"
+echo
+echo "After editing, restart Klipper and Moonraker or use FIRMWARE_RESTART."
 echo "Next steps:"
 echo "  1. Set only the optional Z-switch pin in tool_vision.cfg."
 echo "  2. Disable [axiscope] and [tools_calibrate]."
-echo "  3. Include Tool-Vision/tool_vision.cfg from printer.cfg."
-echo "  4. Restart, home, jog T0 over the camera, and run TV_SETUP_CAMERA."
-echo "  5. Jog T0 above the switch and run TV_SETUP_SWITCH (when pin is set)."
-echo "  6. Run TV_CALIBRATE MODE=Z. Heating to 150 C and cooldown are automatic."
+echo "  3. Home, jog T0 over the camera, and run TV_SETUP_CAMERA."
+echo "  4. Jog T0 above the switch and run TV_SETUP_SWITCH (when pin is set)."
+echo "  5. Run TV_CALIBRATE MODE=Z. Heating to 150 C and cooldown are automatic."
 echo "     Results are report-only by default."
 echo "Service health: http://${LISTEN_HOST}:${LISTEN_PORT}/api/v2/health"

@@ -27,7 +27,7 @@ Hiện dự án mới có môi trường `Observed`, chưa công bố matrix `Su
 Máy pilot đã xác nhận updater Moonraker, host health và Klipper ready. Audit
 2026-08-22 không chạy lại calibration/motion/heat.
 
-`v3.3.0-rc1` mới chỉ pass local unit/component suite trên Windows và parse Bash
+`v3.3.0-rc2` mới chỉ pass local unit/component suite trên Windows và parse Bash
 trên Debian pilot qua stdin. Detector/transform mới, migration setup camera và
 service-restart rehydrate chưa chạy HIL, nên không nâng hàng ToolVision pilot từ
 `v3.2.1` và không gắn trạng thái `Observed` cho RC.

@@ -21,10 +21,11 @@ ToolVision không thay thế kiểm tra cơ khí của người vận hành.
    `[tools_calibrate]` cùng `[tool_vision]`.
 3. Clone release/nhánh đã phê duyệt và chạy `./install.sh` trong phiên terminal
    có sudo.
-4. Thêm `[include Tool-Vision/tool_vision.cfg]` vào `printer.cfg`.
-5. Restart và chạy `TV_STATUS`.
-6. Kiểm tra API health, Klipper ready và updater `tool-vision` xuất hiện trong
-   Mainsail.
+4. Ghi lại đường dẫn thư mục backup local mà installer in ra.
+5. Tự thêm `[include Printer-Setup/tool_vision.cfg]` vào `printer.cfg`; nếu muốn
+   update trên UI, copy updater block installer in ra vào `moonraker.conf`.
+6. Restart Klipper/Moonraker, chạy `TV_STATUS`, kiểm tra API health và updater
+   `tool-vision` xuất hiện trong Mainsail.
 
 Không cài trong khi đang print. Installer hiện chưa transactional hoàn toàn;
 fresh install/upgrade cần theo checklist và giữ backup cho đến khi health pass.
@@ -43,15 +44,34 @@ fresh install/upgrade cần theo checklist và giữ backup cho đến khi healt
 Không chạy `git pull` trực tiếp cho cập nhật bình thường. Repository runtime phải
 sạch để Moonraker quản lý đúng.
 
-### Migration `v3.3.0-rc1`
+### Migration detector `v3.3.0-rc1`
 
 Đây là release candidate thay đổi detector/transform, chưa phải stable đa phần
 cứng. Trước update, backup tối thiểu config và
-`Tool-Vision/tool_vision_state.json`. Transform schema 1 của `v3.2.2` không có
+`Printer-Setup/tool_vision_state.json`. Transform schema 1 của `v3.2.2` không có
 uncertainty/holdout evidence và không được chuyển đổi bằng cách đoán; sau update
 phải gắn reference tool, kiểm tra đường ±0,5 mm rồi chạy lại
 `TV_SETUP_CAMERA`. Switch station/Z state không bị schema camera này thay đổi.
 Không rollout ra máy khác trước khi canary HIL pass.
+
+### Migration config `v3.3.0-rc2`
+
+Chạy `./install.sh` một lần trên máy idle để chuyển từ layout cũ. Installer:
+
+1. backup `printer.cfg`, `moonraker.conf` và mọi file ToolVision tìm thấy dưới
+   `printer_data/config_backups/tool-vision`;
+2. giữ nguyên config đã có tại `Printer-Setup/tool_vision.cfg`, hoặc copy config
+   legacy sang đó khi destination chưa tồn tại;
+3. copy state/result mặc định còn thiếu khi không có đường dẫn tường minh và
+   không có
+   xung đột;
+4. không sửa `printer.cfg`, `moonraker.conf` hoặc xóa artifact legacy.
+
+Người vận hành tự thay include cũ bằng
+`[include Printer-Setup/tool_vision.cfg]`, thay updater include cũ bằng block
+trực tiếp được in ra, restart rồi kiểm tra health. Nếu file cũ và mới khác nhau,
+installer cảnh báo và giữ cả hai. Không xóa thủ công layout cũ trước khi so sánh
+backup và xác định file đang được runtime dùng.
 
 ## Setup camera
 
@@ -179,6 +199,12 @@ Không mở port 8085 trực tiếp ra LAN/Internet; service mặc định khôn
 2. Ghi version từ Mainsail updater, `/api/v2/health` và `TV_STATUS`.
 3. Kiểm tra repository sạch, branch đúng, service/path/symlink nhất quán.
 4. Dùng backup/rollback đã kiểm thử theo [`BACKUP_RESTORE.md`](BACKUP_RESTORE.md).
+
+Nếu `version`/`remote_version` là `?` nhưng hash vẫn đúng, chạy
+`git describe --always --tags --long --dirty --abbrev=8` trong checkout. Chuỗi
+bắt đầu bằng `backup/` không hợp lệ với parser version Moonraker. Không xóa tag
+lịch sử: cập nhật tới release có tag semantic mới và refresh Moonraker. Release
+gate của repo dùng `scripts/release_metadata.py` để phát hiện trường hợp này.
 
 ## Thu thập bằng chứng sự cố
 

@@ -42,8 +42,15 @@ Lưu kết quả theo [`templates/RELEASE_EVIDENCE.md`](templates/RELEASE_EVIDEN
 2. Cập nhật version source và contract test.
 3. Cập nhật `CHANGELOG.md`, ngày release và known limitations.
 4. Xác nhận `git diff --check`, worktree sạch sau commit.
-5. Tạo annotated release tag `vX.Y.Z`; không di chuyển tag đã push.
-6. Push branch và tag; xác minh remote hash/tag dereference.
+5. Tạo annotated semantic release tag `vX.Y.Z` hoặc prerelease được Moonraker
+   hỗ trợ như `vX.Y.Z-rcN`; không di chuyển tag đã push.
+6. Chạy `python scripts/release_metadata.py --expected X.Y.Z[-rcN]`; chuỗi
+   `git describe` bắt đầu bằng `backup/` là release blocker.
+7. Push branch và tag; xác minh remote hash/tag dereference.
+
+Backup công việc mới nằm trong `.local-backups/` bị Git ignore, không phải
+branch/tag GitHub. Các backup tag lịch sử được giữ nguyên theo ADR-0004 và không
+được xóa để “sửa” UI.
 
 ## Canary qua Moonraker
 

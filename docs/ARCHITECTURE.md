@@ -118,7 +118,7 @@ an open validation item rather than a universal guarantee.
 - XYZ must be homed and the printer must not be printing.
 - Setup requires the configured reference tool already mounted. It never
   performs a surprise tool change after the operator manually positions it.
-- The current implementation, including `v3.3.0-rc1`, assumes the reference
+- The current implementation, including `v3.3.0-rc2`, assumes the reference
   tool's configured XYZ offset is zero when teaching and revisiting a station.
   This condition is not yet enforced in code; automatic all-tool
   station-envelope preflight is tracked as R-002 in the risk register.
@@ -166,19 +166,30 @@ host and Klipper services independently during an update.
 The Git checkout is the runtime. Klipper's four extension links and the
 ToolVision systemd service therefore see a Moonraker `git_repo` update
 immediately; copying files to a second non-Git runtime would make the UI claim
-success while leaving old code active. The generated updater section also
-declares the isolated virtualenv and requirements file, then asks Moonraker to
-restart `tool-vision` and `klipper` after a successful update.
+success while leaving old code active. The installer prints a copy/paste
+`[update_manager tool-vision]` section containing the actual checkout,
+virtualenv, origin and current branch, but deliberately does not edit
+`moonraker.conf`. This keeps ownership visible and avoids a general-purpose
+config parser mutating a machine-specific include tree.
 
 Moonraker permits an extension updater to restart a third-party systemd unit
 only when the exact, case-sensitive service name is present in the data
 directory's `moonraker.asvc`. The installer backs up that file and appends only
 `tool-vision`; uninstall performs the inverse operation without altering the
-other allowed services.
+other allowed services. Uninstall stops before system changes while a manual
+Klipper include or ToolVision updater section is still present.
 
 User-owned calibration config and learned/result JSON remain under
-`printer_data/config/Tool-Vision`, outside the repository. This preserves
-Moonraker's pristine-repository invariant without cluttering the config root.
+`printer_data/config/Printer-Setup`, outside the repository. This preserves
+Moonraker's pristine-repository invariant and follows the machine's shared
+configuration layout.
 The installer records the currently checked-out branch as `primary_branch` and
-never guesses or switches the user's channel. Installer backups are kept under
+never guesses or switches the user's channel; the printed block lets the user
+review it before saving. Installer backups are kept under
 `printer_data/config_backups/tool-vision`, not beside active configuration.
+
+Moonraker derives a `git_repo` version from `git describe --tags`. Therefore
+release tags use semantic names such as `v3.3.0-rc2`; backup snapshots created
+after this decision stay in local backup folders excluded from Git. Historical
+backup tags remain unchanged and are superseded by the nearest semantic release
+tag rather than deleted or rewritten. See ADR-0004.

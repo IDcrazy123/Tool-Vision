@@ -143,6 +143,12 @@ chứng đóng.
 - Giải pháp: preflight đầy đủ trước write, manifest thay đổi, staging, commit
   hoặc rollback theo thứ tự; post-install health; restore drill cho upgrade và
   uninstall.
+- Giảm thiểu `v3.3.0-rc2`: installer không tự sửa include Klipper/updater
+  Moonraker; helper backup+checksum toàn bộ file trong phạm vi trước khi copy
+  atomic các file ToolVision còn thiếu. Uninstaller dừng trước system mutation
+  nếu cấu hình thủ công chưa được gỡ. Regression chạy
+  fresh/legacy/conflict/reinstall/uninstall. Full systemd/pip failure injection
+  và rollback toàn transaction vẫn chưa đủ để đóng rủi ro.
 - Đóng khi: test trong VM/container cho fresh install, upgrade, failure ở từng
   bước, uninstall và restore file cũ đều pass.
 
@@ -167,6 +173,10 @@ chứng đóng.
   liệu cũ trước khi người dùng kịp khôi phục.
 - Giải pháp: backup-on-write có retention, migration có version/test, quarantine
   file lỗi, append-only run history và export gọn cho support.
+- Giảm thiểu `v3.3.0-rc2`: default config/state/result chuyển sang
+  `Printer-Setup`; migration backup và kiểm tra checksum rồi chỉ copy destination
+  còn thiếu, giữ nguyên source, explicit path, file xung đột và file lạ.
+  History/quarantine và power-loss/restore drill vẫn chưa triển khai đầy đủ.
 - Đóng khi: migration/rollback qua ít nhất hai schema, power-loss simulation và
   restore drill đều có bằng chứng.
 
@@ -235,7 +245,12 @@ quản lý. Cần structured result/event và support bundle có redaction.
 Version đang lặp ở Klippy, server fallback, package và test. Chuyển sang một
 nguồn release được tạo tại build/install; thêm contract test so mọi nơi trước
 tag. `v3.3.0-rc1` đã thêm contract test cho ba runtime source nhưng chưa hợp
-nhất thành một nguồn build-time, nên rủi ro mới chỉ ở `Mitigating`.
+nhất thành một nguồn build-time. Production còn quan sát `version: ?` vì
+Moonraker nhận backup tag không-semantic gần nhất từ `git describe --tags`.
+`v3.3.0-rc2` thêm metadata gate và ADR-0004: release tag phải semantic, backup
+mới dùng thư mục local bị Git ignore; tag lịch sử được giữ. Tag semantic RC1 được
+đặt đúng production commit hiện tại; rủi ro vẫn `Mitigating` cho đến khi updater
+được refresh trên canary và single-source version hoàn tất.
 
 ### R-017 — Host runtime mất sau restart
 

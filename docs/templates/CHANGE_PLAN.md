@@ -5,7 +5,7 @@
 - Baseline commit/version:
 - Risk IDs:
 - Issue/PR:
-- Backup Git tag:
+- Local backup directory/manifest:
 - Printer backup path/checksum:
 
 ## Problem và evidence

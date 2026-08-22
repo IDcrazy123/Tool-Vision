@@ -4,21 +4,23 @@
 
 | Dữ liệu | Mặc định | Chủ sở hữu | Tái tạo được? | Backup |
 |---|---|---|---|---|
-| Git runtime | `~/Tool-Vision` | Git/Moonraker | Có | tag/remote |
-| Editable config | `~/printer_data/config/Tool-Vision/tool_vision.cfg` | người dùng | Không | bắt buộc |
-| Learned state | `~/printer_data/config/Tool-Vision/tool_vision_state.json` | ToolVision | Có nhưng tốn setup/HIL | bắt buộc |
-| Latest result | `~/printer_data/config/Tool-Vision/tool_vision_results.json` | ToolVision | Có nhưng không tái tạo đúng điều kiện cũ | bắt buộc trước apply |
+| Git runtime | `~/Tool-Vision` | Git/Moonraker | Có | release tag + local bundle |
+| Editable config | `~/printer_data/config/Printer-Setup/tool_vision.cfg` | người dùng | Không | bắt buộc |
+| Learned state | `~/printer_data/config/Printer-Setup/tool_vision_state.json` | ToolVision | Có nhưng tốn setup/HIL | bắt buộc |
+| Latest result | `~/printer_data/config/Printer-Setup/tool_vision_results.json` | ToolVision | Có nhưng không tái tạo đúng điều kiện cũ | bắt buộc trước apply |
 | Host log | `~/printer_data/logs/tool-vision/tool-vision.log` | service | Có thể bỏ | theo incident/retention |
 | Venv | `~/tool-vision-env` | pip/Moonraker | Có | không backup bình thường |
 | Systemd unit | `/etc/systemd/system/tool-vision.service` | installer | Có từ template | lưu manifest |
-| Moonraker updater include | `.../config/Tool-Vision/moonraker_update_manager.conf` | installer | Có | backup cùng config |
+| Moonraker updater block | `[update_manager tool-vision]` trực tiếp trong `moonraker.conf` | người dùng | Có | backup cùng config |
 | Allowed services | `~/printer_data/moonraker.asvc` | Moonraker + installer | Không nên dựng thủ công | backup trước sửa |
 | Installer backups | `~/printer_data/config_backups/tool-vision/` | installer | Không | giữ đến restore drill |
 
 `~` là home của user chạy Klipper, không được hard-code `voron` trong logic.
-Hai file JSON mặc định nằm ở root `config/` trong v3.2.1 và cũ hơn. Installer
-v3.2.2 di chuyển chúng vào `Tool-Vision/` sau khi tạo backup; đường dẫn được
-người dùng khai báo tường minh không bị di chuyển.
+Hai file JSON mặc định nằm ở root `config/` trong v3.2.1 và cũ hơn, rồi nằm
+trong `Tool-Vision/` ở v3.2.2/RC1. Installer RC2 backup rồi copy các default còn
+thiếu vào `Printer-Setup/`; đường dẫn được người dùng khai báo tường minh không
+bị copy. File legacy luôn được giữ để include thủ công cũ tiếp tục hoạt động cho
+đến khi người dùng đổi cấu hình và tự dọn sau khi xác minh.
 
 ## Schema hiện tại
 
@@ -87,16 +89,18 @@ result trong session Klipper hiện tại.
 R-009/R-015 cần chuyển từ “latest only” sang:
 
 ```text
-printer_data/config/Tool-Vision/
+printer_data/config/Printer-Setup/
   tool_vision.cfg
-  state.json
-  history/
+  tool_vision_state.json
+  tool-vision-history/
     YYYY/MM/<run-id>.json
-  backups/
-    <timestamp>/manifest.json + files + SHA256SUMS
-  quarantine/
+  tool-vision-quarantine/
     <timestamp>-invalid-state.json
 ```
+
+Backup installer không nằm trong cây này; nó tiếp tục ở
+`printer_data/config_backups/tool-vision/`. History/quarantine vẫn là thiết kế
+đề xuất, chưa phải behavior runtime RC2.
 
 Mỗi run record nên có:
 
@@ -117,7 +121,8 @@ migration test trước khi triển khai.
 - Giữ tối thiểu 10 local snapshots state/config gần nhất.
 - Giữ mọi snapshot trước upgrade/schema/setup lại cho đến khi restore drill của
   release mới pass.
-- Giữ release evidence và Git tags lâu dài trên remote.
+- Giữ release evidence và semantic release tags lâu dài trên remote; backup mã
+  đang làm việc nằm trong thư mục local bị Git ignore.
 - Log xoay vòng theo dung lượng/thời gian; giữ log liên quan incident cùng
   incident report.
 - Có ít nhất một bản backup ngoài SBC/máy in cho config/state quan trọng.

@@ -19,7 +19,7 @@ class ToolVisionError(RuntimeError):
 
 
 class ToolVision:
-    VERSION = "3.3.0-rc1"
+    VERSION = "3.3.0-rc2"
     TRANSFORM_SCHEMA_VERSION = 2
     # Axiscope's official configuration and the legacy toolchanger calibration
     # both use 150 C. Keep it in code so normal users do not need another cfg
@@ -74,13 +74,13 @@ class ToolVision:
         self.state_file = os.path.expanduser(
             config.get(
                 "state_file",
-                "~/printer_data/config/Tool-Vision/tool_vision_state.json",
+                "~/printer_data/config/Printer-Setup/tool_vision_state.json",
             )
         )
         self.result_file = os.path.expanduser(
             config.get(
                 "result_file",
-                "~/printer_data/config/Tool-Vision/tool_vision_results.json",
+                "~/printer_data/config/Printer-Setup/tool_vision_results.json",
             )
         )
         self.state_store = StateStore(self.state_file, self.VERSION)

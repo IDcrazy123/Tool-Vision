@@ -118,25 +118,43 @@ cd Tool-Vision
 
 Installer dùng chính Git checkout `~/Tool-Vision` làm runtime, tạo venv riêng,
 service `tool-vision.service`, bốn symlink extension và file cấu hình có thể sửa
-trong `~/printer_data/config/Tool-Vision/`. Nó không sửa `printer.cfg`.
+trong `~/printer_data/config/Printer-Setup/`. Trước khi copy/migrate file,
+installer tạo một thư mục backup local có timestamp dưới
+`~/printer_data/config_backups/tool-vision/`; thư mục này chứa `printer.cfg`,
+`moonraker.conf` và các file ToolVision đang có.
 
-Installer đồng thời tạo:
-
-```text
-~/printer_data/config/Tool-Vision/moonraker_update_manager.conf
-```
-
-và thêm một include vào `moonraker.conf` sau khi đã sao lưu file đó. Installer
-cũng sao lưu rồi thêm đúng dịch vụ `tool-vision` vào
-`~/printer_data/moonraker.asvc`, theo cơ chế dịch vụ được phép của Moonraker.
-Checkout Git và cấu hình người dùng được tách riêng, nên Moonraker vẫn yêu cầu
-repository sạch nhưng người dùng có thể sửa `tool_vision.cfg` bình thường.
-
-Thêm include rồi restart:
+Installer **không tự sửa** cấu hình máy. Sau khi chạy xong, thêm đúng một dòng
+sau vào `printer.cfg`:
 
 ```ini
-[include Tool-Vision/tool_vision.cfg]
+[include Printer-Setup/tool_vision.cfg]
 ```
+
+Muốn cập nhật từ Mainsail/Fluidd, thêm section sau vào `moonraker.conf` (không
+thêm lặp lại nếu đã có):
+
+```ini
+[update_manager tool-vision]
+type: git_repo
+channel: dev
+path: ~/Tool-Vision
+origin: https://github.com/IDcrazy123/Tool-Vision.git
+primary_branch: main
+virtualenv: ~/tool-vision-env
+requirements: server/requirements.txt
+managed_services: tool-vision klipper
+info_tags:
+  desc=ToolVision automatic XYZ tool-offset calibration
+```
+
+Các máy Mainsail/Fluidd thường đã có section `[update_manager]` cơ sở. Nếu đã
+có thì không thêm lần hai; nếu hoàn toàn chưa có, thêm một section cơ sở riêng
+theo tài liệu Moonraker. Installer vẫn sao lưu rồi thêm đúng dịch vụ
+`tool-vision` vào `~/printer_data/moonraker.asvc` để updater có quyền restart.
+Checkout Git và cấu hình người dùng được tách riêng, nên Moonraker yêu cầu
+repository sạch nhưng người dùng có thể sửa `tool_vision.cfg` bình thường.
+
+Sau khi lưu hai cấu hình thủ công, restart Klipper/Moonraker rồi kiểm tra:
 
 ```gcode
 FIRMWARE_RESTART
@@ -145,10 +163,11 @@ TV_STATUS
 
 ### Cập nhật trong Mainsail/Fluidd
 
-Sau lần chạy installer đầu tiên, trang **Machine → Update Manager** có mục
-`tool-vision` giống Klipper. Nhấn refresh rồi update tại đó; Moonraker sẽ:
+Sau khi thêm updater block và restart Moonraker, trang
+**Machine → Update Manager** có mục `tool-vision` giống Klipper. Nhấn refresh
+rồi update tại đó; Moonraker sẽ:
 
-1. fetch/pull đúng Git branch đã được installer ghi nhận;
+1. fetch/pull đúng `primary_branch` người dùng đã thêm;
 2. cập nhật dependency trong `~/tool-vision-env` nếu requirements thay đổi;
 3. restart `tool-vision` và `klipper` sau khi cập nhật.
 
@@ -158,22 +177,31 @@ Không cần SSH hay chạy lại `install.sh` cho các lần cập nhật thôn
 
 Moonraker không cho update trong lúc đang in và chỉ quản lý repository sạch.
 Không sửa file bên trong `~/Tool-Vision`; mọi cấu hình cần chỉnh nằm ở
-`~/printer_data/config/Tool-Vision/tool_vision.cfg`.
+`~/printer_data/config/Printer-Setup/tool_vision.cfg`.
 
 Máy đã cài bản ToolVision dùng runtime copy cũ chỉ cần cập nhật Git thủ công và
-chạy `./install.sh` **một lần** để chuyển service/symlink sang checkout Git và
-đăng ký Update Manager. Những lần sau có thể cập nhật trên giao diện.
+chạy `./install.sh` **một lần** để chuyển service/symlink sang checkout Git, rồi
+thêm updater block ở trên. Những lần sau có thể cập nhật trên giao diện.
 
 Khi nâng từ ToolVision 2, installer sao lưu cấu hình mẫu cũ với hậu tố
 `.pre-v3-<timestamp>` trước khi đặt file tối giản mới. State schema 1 không được
 đọc như schema 2; hãy setup lại hai station để tránh dùng nhầm dữ liệu cũ.
+
+Khi nâng từ layout `config/Tool-Vision`, installer sao lưu rồi **copy** config và
+các file state/result mặc định còn thiếu sang `Printer-Setup`. Nó không sửa
+include cũ, updater hay xóa thư mục legacy. Người dùng thay dòng include cũ bằng
+`[include Printer-Setup/tool_vision.cfg]`, thay updater include cũ bằng block
+trực tiếp ở trên, restart và xác nhận `TV_STATUS`; sau đó mới tự lưu trữ/xóa
+layout cũ nếu muốn. Nếu file cũ và mới khác nhau, cả hai được giữ lại để so sánh
+thủ công. Mọi backup nằm dưới
+`~/printer_data/config_backups/tool-vision/`, không nằm trong config root.
 
 ## Setup một lần
 
 ### 1. Camera XY
 
 1. Home XYZ, gắn T0, xác nhận offset cấu hình của T0 đang là XYZ zero và làm
-   sạch nozzle. Bản hiện tại, gồm `v3.3.0-rc1`, chưa hỗ trợ an toàn reference
+   sạch nozzle. Bản hiện tại, gồm `v3.3.0-rc2`, chưa hỗ trợ an toàn reference
    tool có offset non-zero; giới hạn này được theo dõi tại `R-002` trong risk
    register.
 2. Jog T0 đến gần tâm ảnh camera; chỉnh Z/focus vật lý để vòi tương đối rõ.
@@ -276,26 +304,27 @@ cho Z. Xem đặc tả kỹ thuật tại [`docs/ARCHITECTURE.md`](docs/ARCHITEC
 Kết quả được lưu ở:
 
 ```text
-~/printer_data/config/Tool-Vision/tool_vision_results.json
+~/printer_data/config/Printer-Setup/tool_vision_results.json
 ```
 
 State học một lần được lưu riêng ở:
 
 ```text
-~/printer_data/config/Tool-Vision/tool_vision_state.json
+~/printer_data/config/Printer-Setup/tool_vision_state.json
 ```
 
 Hãy chạy ít nhất ba lần, so sánh độ lặp và backup offset hiện tại trước khi áp
 dụng thủ công. Kết quả là **tương đối với reference**, không phải giá trị tuyệt
-đối để chép mù quáng. Với bản hiện tại, gồm `v3.3.0-rc1`, reference tool phải có
+đối để chép mù quáng. Với bản hiện tại, gồm `v3.3.0-rc2`, reference tool phải có
 configured XYZ offset zero trong lúc setup/calibrate; preflight tự động cho điều
 kiện này nằm trong
 [lộ trình R-002](docs/RISK_REGISTER.md#r-002--reference-offset-và-station-envelope).
 
-Từ v3.2.2, state/result mặc định nằm cùng thư mục `Tool-Vision/` thay vì làm
-rối root `config`. Installer tự di chuyển hai file mặc định của v3.2.1 trở về
-đúng chỗ và lưu bản sao trong `~/printer_data/config_backups/tool-vision/`.
-Các đường dẫn `state_file`/`result_file` đã đặt tường minh luôn được giữ nguyên.
+Từ `v3.3.0-rc2`, config/state/result mặc định nằm trong `Printer-Setup/` cùng bố
+cục cấu hình máy. Installer backup rồi copy các file mặc định còn thiếu của
+v3.2.2 về đúng chỗ, nhưng giữ source legacy cho đến khi người dùng tự đổi include
+và xác minh. Các đường dẫn `state_file`/`result_file` đã đặt tường
+minh luôn được giữ nguyên.
 
 `v3.3.0-rc1` nâng camera transform lên schema 2 để lưu holdout/uncertainty
 evidence. Trước khi thử RC, backup `tool_vision_state.json`; sau update phải chạy
@@ -363,12 +392,12 @@ OpenCV/NumPy không chạy trong process Klipper. Host chỉ trả quan sát; n�
 python -m unittest discover -s tests -v
 ```
 
-70 test của `v3.3.0-rc1` bao phủ camera discovery mơ hồ, URL Moonraker port 80,
+84 test của `v3.3.0-rc2` bao phủ camera discovery mơ hồ, URL Moonraker port 80,
 MJPEG/native frame, pixel/deadline bounds, profile ambiguity, focus tương đối,
 thay đổi resolution, 10-point fit/outlier/holdout/uncertainty, frozen frame, dấu
 XYZ, motion lift-first, host rehydrate/configure race, adapter toolchanger
-cũ/mới, state atomic, API v2 và contract installer/config. Synthetic tests không
-thay thế corpus ảnh thật/HIL.
+cũ/mới, state atomic, API v2, migration installer/config và metadata Moonraker.
+Synthetic tests không thay thế corpus ảnh thật/HIL.
 
 ## Nguồn logic và điểm cải thiện
 
@@ -413,7 +442,8 @@ Bộ tài liệu bảo trì dài hạn nằm tại [`docs/README.md`](docs/READM
   [checklist phát hành](docs/RELEASE.md).
 
 Baseline audit 3.2.1 được đánh giá là pilot có giám sát, report-only. Bản
-`v3.3.0-rc1` thêm safety gates cho detector/transform/camera nhưng vẫn chỉ là
+`v3.3.0-rc2` thêm safety gates cho detector/transform/camera và migration config
+nhưng vẫn chỉ là
 release candidate vì chưa có corpus ảnh thật/HIL. Các rủi ro P0/P1 trong
 register phải được xử lý và có bằng chứng trước khi tuyên bố hỗ trợ ổn định đa
 phần cứng hoặc thêm chức năng tự áp offset.
@@ -432,10 +462,14 @@ before manual application.
 
 ## Gỡ cài đặt
 
+Trước hết xóa dòng include ToolVision khỏi `printer.cfg` và xóa toàn bộ section
+`[update_manager tool-vision]` khỏi `moonraker.conf`, rồi chạy:
+
 ```bash
 ./uninstall.sh
 ```
 
-Service, bốn symlink và mục Moonraker Update Manager được gỡ. Git checkout,
-state, result, cấu hình và backup được giữ lại. Thêm `--purge-venv` chỉ khi muốn
-xóa cả môi trường Python riêng.
+Nếu hai cấu hình thủ công vẫn còn, uninstaller tạo backup rồi dừng trước khi gỡ
+service. Khi cấu hình đã sạch, service, bốn symlink và quyền restart Moonraker
+được gỡ. Git checkout, state, result, cấu hình và backup vẫn được giữ lại. Thêm
+`--purge-venv` chỉ khi muốn xóa cả môi trường Python riêng.

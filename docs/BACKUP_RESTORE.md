@@ -21,19 +21,26 @@ phải backup đã xác nhận.
 - ngay sau một setup/HIL tốt cần giữ làm baseline;
 - trước thu thập/sửa file khi xử lý incident.
 
-## Backup code bằng Git
+## Backup code vào một thư mục local
 
+Tạo một thư mục `.local-backups/<topic>-<timestamp>/` trong checkout. Pattern
+này nằm trong `.gitignore`, vì vậy backup công việc không được push lên GitHub.
 Tại worktree sạch:
 
 ```bash
 git status --short --branch
-git tag -a backup/pre-<topic>-YYYYMMDD-HHMMSS -m "Backup before <topic>"
-git push origin backup/pre-<topic>-YYYYMMDD-HHMMSS
-git show --no-patch --decorate backup/pre-<topic>-YYYYMMDD-HHMMSS
+backup_dir=".local-backups/pre-<topic>-YYYYMMDD-HHMMSS"
+mkdir -p "${backup_dir}"
+git bundle create "${backup_dir}/repository.bundle" --all
+git rev-parse HEAD > "${backup_dir}/BASELINE.txt"
+git status --short --branch > "${backup_dir}/STATUS.txt"
+git bundle verify "${backup_dir}/repository.bundle"
 ```
 
-Không di chuyển hoặc ghi đè tag backup/release đã push. Nếu tag sai, tạo tag mới
-và ghi chú; không làm lịch sử trở nên mơ hồ.
+Nếu worktree có thay đổi hợp lệ cần giữ, copy đúng các file đó vào cùng thư mục
+backup trước khi sửa tiếp và ghi rõ chúng trong change plan. Không dùng GitHub
+branch/tag làm kho backup công việc. Remote chỉ giữ commit/PR và semantic
+release tag; xem ADR-0004.
 
 ## Backup dữ liệu printer
 
@@ -46,12 +53,12 @@ install_user="$(id -un)"
 user_home="$(getent passwd "${install_user}" | cut -d: -f6)"
 printer_data="${user_home}/printer_data"
 stamp="$(date +%Y%m%d-%H%M%S)"
-backup_root="${printer_data}/backups/tool-vision/${stamp}"
+backup_root="${printer_data}/config_backups/tool-vision/manual-${stamp}"
 
-# Hai path root bên dưới chỉ để thu cả file legacy v3.2.1 nếu migration chưa
-# hoàn tất; v3.2.2 mặc định đã chứa state/result trong thư mục Tool-Vision.
+# Thu cả layout hiện tại và các path legacy nếu migration chưa hoàn tất.
 install -d -m 0750 "${backup_root}"
 for source_path in \
+  "${printer_data}/config/Printer-Setup" \
   "${printer_data}/config/Tool-Vision" \
   "${printer_data}/config/tool_vision_state.json" \
   "${printer_data}/config/tool_vision_results.json" \
@@ -81,6 +88,8 @@ hạn chế và bản gửi support phải redaction.
 cd /đường/dẫn/backup
 sha256sum --check SHA256SUMS
 for json_path in \
+  Printer-Setup/tool_vision_state.json \
+  Printer-Setup/tool_vision_results.json \
   Tool-Vision/tool_vision_state.json \
   Tool-Vision/tool_vision_results.json \
   tool_vision_state.json \
@@ -100,7 +109,8 @@ tiếp theo.
 - Local: tối thiểu 10 snapshot gần nhất hoặc nhiều hơn nếu dung lượng cho phép.
 - Giữ vô thời hạn snapshot trước migration/schema và mọi release evidence.
 - Off-device: ít nhất một bản config/state/result quan trọng ngoài SBC.
-- Git: backup tag và release tag trên remote.
+- Code: bundle/file backup trong thư mục local bị Git ignore; semantic release
+  tag trên remote không thay thế backup công việc.
 - Không backup venv làm nguồn khôi phục chính; dependency phải tái dựng từ
   constraints/release.
 
@@ -155,12 +165,18 @@ Sau rollback:
 
 Backup không qua restore drill phải ghi `unverified`.
 
-## Mốc backup đã tạo cho audit này
+## Mốc backup đã tạo cho audit và migration
 
 - Git tag: `backup/pre-project-audit-20260822`.
 - Commit: `42202a295d4b28321afe5f047c59b4d367399fed`.
 - Git tag trước khi thêm handbook/agent contract:
   `backup/pre-governance-docs-20260822` tại baseline `v3.2.2`.
+- Historical Git tag trước config migration:
+  `backup/pre-config-layout-migration-20260822-184537` tại `5e79f633`.
+
+Các tag `backup/...` trên là lịch sử và không bị xóa. Sau ADR-0004, snapshot
+công việc mới chỉ nằm trong thư mục `.local-backups/` bị Git ignore để không can
+thiệp `git describe --tags` của Moonraker và không dùng GitHub làm kho backup.
 
 Đây là backup code. Backup dữ liệu printer vẫn phải làm riêng trước mỗi thay đổi
 trên máy.

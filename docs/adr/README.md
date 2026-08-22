@@ -9,5 +9,6 @@ không bị sửa để viết lại lịch sử; thay đổi quyết định b�
 | [`0001-report-only.md`](0001-report-only.md) | Accepted | Kết quả mặc định không tự áp offset |
 | [`0002-process-boundary.md`](0002-process-boundary.md) | Accepted | Motion ở Klipper, computer vision ở host |
 | [`0003-teach-once-state.md`](0003-teach-once-state.md) | Accepted | Fixture được dạy và lưu ngoài `.cfg` |
+| [`0004-moonraker-release-refs.md`](0004-moonraker-release-refs.md) | Accepted | Release dùng tag semantic; backup nằm trong thư mục local bị Git ignore |
 
 Dùng [`0000-template.md`](0000-template.md) cho quyết định mới.
