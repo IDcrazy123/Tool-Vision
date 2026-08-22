@@ -169,9 +169,7 @@ Khi nâng từ ToolVision 2, installer sao lưu cấu hình mẫu cũ với hậ
 
 ### 1. Camera XY
 
-1. Home XYZ, gắn T0, xác nhận offset cấu hình của T0 đang là XYZ zero và làm
-   sạch nozzle. Bản 3.2.1 chưa hỗ trợ an toàn reference tool có offset non-zero;
-   giới hạn này được theo dõi tại `R-002` trong risk register.
+1. Home XYZ, gắn T0 và làm sạch nozzle.
 2. Jog T0 đến gần tâm ảnh camera; chỉnh Z/focus vật lý để vòi tương đối rõ.
 3. Bảo đảm có khoảng trống cho chuyển động 0,5 mm quanh điểm hiện tại.
 4. Chạy:
@@ -279,10 +277,8 @@ State học một lần được lưu riêng ở:
 ```
 
 Hãy chạy ít nhất ba lần, so sánh độ lặp và backup offset hiện tại trước khi áp
-dụng thủ công. Kết quả là **tương đối với reference**, không phải giá trị tuyệt
-đối để chép mù quáng. Với v3.2.1, reference tool phải có configured XYZ offset
-zero trong lúc setup/calibrate; preflight tự động cho điều kiện này nằm trong
-[lộ trình R-002](docs/RISK_REGISTER.md#r-002--reference-offset-và-station-envelope).
+dụng thủ công. Nếu reference tool không phải baseline zero, kết quả vẫn là
+**tương đối với reference**, không phải giá trị tuyệt đối để chép mù quáng.
 
 Từ v3.2.2, state/result mặc định nằm cùng thư mục `Tool-Vision/` thay vì làm
 rối root `config`. Installer tự di chuyển hai file mặc định của v3.2.1 trở về
@@ -376,25 +372,6 @@ API v2 và contract installer/config.
 
 Hai submodule Axiscope/kTAMV chỉ là nguồn tham chiếu phát triển, không được copy
 vào runtime printer.
-
-## Quản trị dự án và lộ trình
-
-Bộ tài liệu bảo trì dài hạn nằm tại [`docs/README.md`](docs/README.md), gồm:
-
-- [audit mã nguồn 2026-08-22](docs/AUDIT_2026-08-22.md) và
-  [risk register](docs/RISK_REGISTER.md);
-- [lộ trình theo safety gate](docs/PROJECT_PLAN.md),
-  [quy trình phát triển](docs/DEVELOPMENT.md) và
-  [chiến lược test/HIL](docs/TESTING.md);
-- [runbook vận hành](docs/OPERATIONS.md),
-  [dữ liệu/lưu trữ](docs/DATA_AND_STORAGE.md) và
-  [backup/restore](docs/BACKUP_RESTORE.md);
-- [ma trận tương thích](docs/COMPATIBILITY.md) và
-  [checklist phát hành](docs/RELEASE.md).
-
-Baseline 3.2.1 được đánh giá là pilot có giám sát, report-only. Các rủi ro P0/P1
-trong register phải được xử lý và có bằng chứng trước khi tuyên bố hỗ trợ ổn định
-đa phần cứng hoặc thêm chức năng tự áp offset.
 
 ## English quick start
 
