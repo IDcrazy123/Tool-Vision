@@ -14,7 +14,6 @@ import uuid
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 
-import cv2
 from flask import Flask, Response, jsonify, request
 from werkzeug.exceptions import HTTPException
 
@@ -24,10 +23,14 @@ try:
     from .detection import DetectionError, NozzleDetector
     from .transform import TransformError, TransformModel
 except ImportError:  # pragma: no cover - direct script execution
-    VERSION = "3.2.2"
+    VERSION = "3.3.0-rc1"
     from camera import CameraError, CameraSource, resolve_camera
     from detection import DetectionError, NozzleDetector
     from transform import TransformError, TransformModel
+
+# camera.py establishes OpenCV's decode resource ceiling before this import.
+import cv2
+
 
 class ServiceState:
     """Thread-safe ownership of one camera and one serial detection queue."""
@@ -43,6 +46,7 @@ class ServiceState:
         self.settings = {}
         self.jobs = OrderedDict()
         self.active_job = None
+        self.configuring = False
         self.latest_jpeg = None
 
     def close(self):
@@ -58,38 +62,62 @@ class ServiceState:
         with self.lock:
             if self.active_job is not None:
                 raise DetectionError("camera is busy with job %s" % self.active_job)
+            if self.configuring:
+                raise DetectionError("camera configuration is already in progress")
+            # Resolution and first capture intentionally happen outside the
+            # lock, but this state gate prevents a job from retaining the old
+            # camera/detector while configuration later swaps in a new pair.
+            self.configuring = True
 
-        descriptor = resolve_camera(settings)
-        candidate = CameraSource(
-            descriptor,
-            timeout=float(settings.get("read_timeout", 5.0)),
-        )
+        candidate = None
+        previous = None
         try:
+            descriptor = resolve_camera(settings)
+            candidate = CameraSource(
+                descriptor,
+                timeout=float(settings.get("read_timeout", 5.0)),
+            )
             frame = candidate.capture()
-        except Exception:
-            candidate.close()
-            raise
-        profile = settings.get("profile")
-        transform = settings.get("transform")
-        detector = NozzleDetector(profile) if profile else NozzleDetector()
-        model = TransformModel(transform) if transform else TransformModel()
+            preview = self._encode_frame(frame)
+            profile = settings.get("profile")
+            transform = settings.get("transform")
+            detector = NozzleDetector(profile) if profile else NozzleDetector()
+            model = TransformModel(transform) if transform else TransformModel()
 
-        with self.lock:
-            previous = self.camera
-            self.camera = candidate
-            self.camera_descriptor = descriptor
-            self.detector = detector
-            self.transform = model
-            self.settings = dict(settings)
-            self._store_frame(frame)
+            with self.lock:
+                previous = self.camera
+                self.camera = candidate
+                self.camera_descriptor = descriptor
+                self.detector = detector
+                self.transform = model
+                self.settings = dict(settings)
+                self.latest_jpeg = preview
+                candidate = None  # ownership transferred to ServiceState
             if previous is not None:
-                previous.close()
+                try:
+                    previous.close()
+                except Exception:
+                    self.log.exception("failed to close previous camera")
+        finally:
+            try:
+                if candidate is not None:
+                    try:
+                        candidate.close()
+                    except Exception:
+                        # Preserve the configuration/capture error that caused
+                        # this cleanup path; release failure is diagnostic.
+                        self.log.exception("failed to close candidate camera")
+            finally:
+                with self.lock:
+                    self.configuring = False
         return self.health()
 
     def start_job(self, kind):
         if kind not in ("learn", "detect"):
             raise DetectionError("unknown job type '%s'" % kind)
         with self.lock:
+            if self.configuring:
+                raise DetectionError("camera configuration is in progress")
             if self.camera is None or self.detector is None:
                 raise DetectionError("camera service has not been configured")
             if self.active_job is not None:
@@ -115,6 +143,8 @@ class ServiceState:
 
     def fit_transform(self, payload):
         with self.lock:
+            if self.configuring:
+                raise TransformError("camera configuration is in progress")
             if self.active_job is not None:
                 raise TransformError("camera is busy with job %s" % self.active_job)
             transform = self.transform.fit(payload)
@@ -122,10 +152,14 @@ class ServiceState:
 
     def correction(self, payload):
         with self.lock:
+            if self.configuring:
+                raise TransformError("camera configuration is in progress")
             return {"correction": self.transform.correction(payload)}
 
     def clear_transform(self):
         with self.lock:
+            if self.configuring:
+                raise TransformError("camera configuration is in progress")
             self.transform.clear()
         return {"ok": True}
 
@@ -138,7 +172,11 @@ class ServiceState:
                     for key in ("name", "location", "discovered", "uid", "rotation")
                     if key in self.camera_descriptor
                 }
-            profile = dict(self.detector.profile) if self.detector and self.detector.profile else None
+            profile = (
+                dict(self.detector.profile)
+                if self.detector and self.detector.profile
+                else None
+            )
             return {
                 "ok": True,
                 "version": VERSION,
@@ -146,6 +184,7 @@ class ServiceState:
                 "camera": descriptor,
                 "profile": profile,
                 "transform": self.transform.status(),
+                "configuring": self.configuring,
                 "active_job": self.active_job,
                 "has_preview": self.latest_jpeg is not None,
             }
@@ -179,10 +218,17 @@ class ServiceState:
                     self.active_job = None
 
     def _store_frame(self, frame):
+        preview = self._encode_frame(frame)
+        if preview is not None:
+            with self.lock:
+                self.latest_jpeg = preview
+
+    @staticmethod
+    def _encode_frame(frame):
         ok, encoded = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 88])
         if ok:
-            with self.lock:
-                self.latest_jpeg = encoded.tobytes()
+            return encoded.tobytes()
+        return None
 
     def _trim_jobs(self):
         while len(self.jobs) > 40:
@@ -197,7 +243,9 @@ def create_app(log_directory=None):
     logger = logging.getLogger("tool_vision")
     if log_directory:
         os.makedirs(log_directory, exist_ok=True)
-        if not any(isinstance(handler, logging.FileHandler) for handler in logger.handlers):
+        if not any(
+            isinstance(handler, logging.FileHandler) for handler in logger.handlers
+        ):
             handler = logging.FileHandler(
                 os.path.join(log_directory, "tool-vision.log"), encoding="utf-8"
             )

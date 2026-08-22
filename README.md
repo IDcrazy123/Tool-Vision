@@ -24,9 +24,12 @@ dùng, không gọi `SET_TOOL_PARAMETER`, `SAVE_TOOL_PARAMETER` hoặc `SAVE_CON
 - Tool được đọc động từ toolchanger; không cần danh sách `tool_numbers`.
 - Detector thử nhiều chiến lược dark/light, adaptive/Otsu/edge, chọn kết quả ổn
   định gần tâm và học hình học vòi in từ ảnh thật.
+- Runtime dừng nếu nhiều vật khác vị trí cùng khớp nozzle profile; không chọn
+  im lặng vật gần tâm như kTAMV.
 - Ảnh giữ nguyên độ phân giải; không resize cố định 640×480.
 - Pixel/mm được fit tự động từ đúng chu trình mười điểm bán kính 0,5 mm của
-  kTAMV, có loại điểm ngoại lai và kiểm tra ma trận.
+  kTAMV, có loại điểm ngoại lai, leave-one-out và ước lượng uncertainty từ độ
+  ổn định pixel của chính run.
 - Z dùng năm mẫu, median, tolerance 0,05 mm và hai lần retry theo khuyến nghị
   hiện tại của [klipper-toolchanger tools_calibrate](https://github.com/viesturz/klipper-toolchanger/blob/main/tools_calibrate.md).
 - ToolVision nâng Z trước khi đi XY, kiểm tra homed/printing/giới hạn động học và
@@ -170,8 +173,9 @@ Khi nâng từ ToolVision 2, installer sao lưu cấu hình mẫu cũ với hậ
 ### 1. Camera XY
 
 1. Home XYZ, gắn T0, xác nhận offset cấu hình của T0 đang là XYZ zero và làm
-   sạch nozzle. Bản 3.2.2 hiện tại chưa hỗ trợ an toàn reference tool có offset
-   non-zero; giới hạn này được theo dõi tại `R-002` trong risk register.
+   sạch nozzle. Bản hiện tại, gồm `v3.3.0-rc1`, chưa hỗ trợ an toàn reference
+   tool có offset non-zero; giới hạn này được theo dõi tại `R-002` trong risk
+   register.
 2. Jog T0 đến gần tâm ảnh camera; chỉnh Z/focus vật lý để vòi tương đối rõ.
 3. Bảo đảm có khoảng trống cho chuyển động 0,5 mm quanh điểm hiện tại.
 4. Chạy:
@@ -187,7 +191,10 @@ Một lệnh này sẽ:
 - yêu cầu ba detection liên tiếp ổn định;
 - chạy mười vị trí calibration kTAMV;
 - yêu cầu tối thiểu 8/10 điểm hợp lệ;
-- fit ma trận 2D, loại điểm sai vượt 20%, kiểm tra rank/condition/residual;
+- fit ma trận 2D, loại điểm sai, kiểm tra rank/condition, training/held-out
+  residual và uncertainty;
+- chỉ xác nhận center khi nominal error cộng uncertainty nằm trong tolerance,
+  đồng thời ảnh mới phản ánh commanded move;
 - tự center T0 rồi lưu XYZ camera, safe Z, detector và transform.
 
 ### 2. Switch Z
@@ -280,14 +287,22 @@ State học một lần được lưu riêng ở:
 
 Hãy chạy ít nhất ba lần, so sánh độ lặp và backup offset hiện tại trước khi áp
 dụng thủ công. Kết quả là **tương đối với reference**, không phải giá trị tuyệt
-đối để chép mù quáng. Với v3.2.2 hiện tại, reference tool phải có configured XYZ
-offset zero trong lúc setup/calibrate; preflight tự động cho điều kiện này nằm
-trong [lộ trình R-002](docs/RISK_REGISTER.md#r-002--reference-offset-và-station-envelope).
+đối để chép mù quáng. Với bản hiện tại, gồm `v3.3.0-rc1`, reference tool phải có
+configured XYZ offset zero trong lúc setup/calibrate; preflight tự động cho điều
+kiện này nằm trong
+[lộ trình R-002](docs/RISK_REGISTER.md#r-002--reference-offset-và-station-envelope).
 
 Từ v3.2.2, state/result mặc định nằm cùng thư mục `Tool-Vision/` thay vì làm
 rối root `config`. Installer tự di chuyển hai file mặc định của v3.2.1 trở về
 đúng chỗ và lưu bản sao trong `~/printer_data/config_backups/tool-vision/`.
 Các đường dẫn `state_file`/`result_file` đã đặt tường minh luôn được giữ nguyên.
+
+`v3.3.0-rc1` nâng camera transform lên schema 2 để lưu holdout/uncertainty
+evidence. Trước khi thử RC, backup `tool_vision_state.json`; sau update phải chạy
+lại `TV_SETUP_CAMERA`. Không có cách chuyển đổi chính xác transform schema 1 vì
+dữ liệu stability cần được đo lại. Switch/Z station không cần setup lại do thay
+đổi camera schema. RC chưa được phát hành stable trước khi corpus ảnh thật và
+HIL canary hoàn tất.
 
 ## Lệnh và giao diện
 
@@ -348,18 +363,20 @@ OpenCV/NumPy không chạy trong process Klipper. Host chỉ trả quan sát; n�
 python -m unittest discover -s tests -v
 ```
 
-Các test bao phủ camera discovery mơ hồ, URL Moonraker port 80, MJPEG/native
-frame, profile detection, focus tương đối, thay đổi resolution, 10-point fit và
-outlier, dấu XYZ, motion lift-first, adapter toolchanger cũ/mới, state atomic,
-API v2 và contract installer/config.
+70 test của `v3.3.0-rc1` bao phủ camera discovery mơ hồ, URL Moonraker port 80,
+MJPEG/native frame, pixel/deadline bounds, profile ambiguity, focus tương đối,
+thay đổi resolution, 10-point fit/outlier/holdout/uncertainty, frozen frame, dấu
+XYZ, motion lift-first, host rehydrate/configure race, adapter toolchanger
+cũ/mới, state atomic, API v2 và contract installer/config. Synthetic tests không
+thay thế corpus ảnh thật/HIL.
 
 ## Nguồn logic và điểm cải thiện
 
-- [kTAMV](https://github.com/TypQxQ/kTAMV): nhiều kiểu preprocessing, detection
-  ổn định, pattern mười điểm 0,5 mm, yêu cầu ít nhất 75% điểm và centering. Bản
-  mới bỏ giả định resize 640×480, lưu profile/transform sau restart và thêm kiểm
-  tra ambiguity/rank/condition/residual.
-- [Axiscope](https://github.com/nic335/Axiscope): dùng
+- [kTAMV](https://github.com/TypQxQ/kTAMV/tree/72421f2d54da0de8701c4f84449c6e6b7d060301):
+  nhiều kiểu preprocessing, detection ổn định, pattern mười điểm 0,5 mm, yêu
+  cầu ít nhất 75% điểm và centering. ToolVision bỏ giả định 640×480, rehydrate
+  profile/transform sau host restart và thêm ambiguity/holdout/uncertainty gate.
+- [Axiscope](https://github.com/nic335/Axiscope/tree/9a1a9efe3cfa6dc1e816acaaea87f8ac513282f6): dùng
   `PrinterProbeMultiAxis`, trigger delta theo T0 và ý tưởng lấy vị trí switch hiện
   tại. Ví dụ chính thức preheat mọi tool ở 150 °C và cung cấp hook sau pickup;
   ToolVision kế thừa hai điểm này nhưng bổ sung chờ nhiệt từng tool và cleanup
@@ -388,16 +405,18 @@ Bộ tài liệu bảo trì dài hạn nằm tại [`docs/README.md`](docs/READM
 - [lộ trình theo safety gate](docs/PROJECT_PLAN.md),
   [quy trình phát triển](docs/DEVELOPMENT.md) và
   [chiến lược test/HIL](docs/TESTING.md);
+- [thiết kế detector/transform và bảng nguồn](docs/DETECTION_DESIGN.md);
 - [runbook vận hành](docs/OPERATIONS.md),
   [dữ liệu/lưu trữ](docs/DATA_AND_STORAGE.md) và
   [backup/restore](docs/BACKUP_RESTORE.md);
 - [ma trận tương thích](docs/COMPATIBILITY.md) và
   [checklist phát hành](docs/RELEASE.md).
 
-Baseline audit 3.2.1 được đánh giá là pilot có giám sát, report-only; bản hiện
-tại 3.2.2 mới tổ chức lại dữ liệu sinh ra và chưa thay đổi kết luận safety. Các
-rủi ro P0/P1 trong register phải được xử lý và có bằng chứng trước khi tuyên bố
-hỗ trợ ổn định đa phần cứng hoặc thêm chức năng tự áp offset.
+Baseline audit 3.2.1 được đánh giá là pilot có giám sát, report-only. Bản
+`v3.3.0-rc1` thêm safety gates cho detector/transform/camera nhưng vẫn chỉ là
+release candidate vì chưa có corpus ảnh thật/HIL. Các rủi ro P0/P1 trong
+register phải được xử lý và có bằng chứng trước khi tuyên bố hỗ trợ ổn định đa
+phần cứng hoặc thêm chức năng tự áp offset.
 
 ## English quick start
 

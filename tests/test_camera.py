@@ -66,6 +66,22 @@ class CameraDiscoveryTests(unittest.TestCase):
         self.assertTrue(result["flip_horizontal"])
         self.assertEqual(result["rotation"], 90)
 
+    @mock.patch("server.camera._http_json")
+    def test_invalid_moonraker_rotation_is_a_camera_domain_error(self, fetch):
+        fetch.return_value = {
+            "result": {
+                "webcams": [
+                    {
+                        "name": "nozzle",
+                        "snapshot_url": "/webcam/snapshot",
+                        "rotation": "sideways",
+                    }
+                ]
+            }
+        }
+        with self.assertRaisesRegex(CameraError, "rotation"):
+            resolve_camera({"moonraker_url": "http://printer:7125"})
+
 
 class NativeFrameTests(unittest.TestCase):
     def test_rotation_changes_dimensions_without_resizing(self):
@@ -87,6 +103,48 @@ class NativeFrameTests(unittest.TestCase):
         with mock.patch("urllib.request.urlopen", return_value=response):
             captured = CameraSource({"source": "http://camera/stream"}).capture()
         self.assertEqual(captured.shape[:2], (333, 777))
+
+    def test_http_frame_over_configured_pixel_limit_is_rejected(self):
+        frame = np.full((30, 40, 3), 180, dtype=np.uint8)
+        ok, encoded = cv2.imencode(".jpg", frame)
+        self.assertTrue(ok)
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.side_effect = [encoded.tobytes(), b""]
+        source = CameraSource(
+            {"source": "http://camera/snapshot"}, max_pixels=1000
+        )
+        with mock.patch("urllib.request.urlopen", return_value=response):
+            with self.assertRaisesRegex(CameraError, "pixel limit"):
+                source.capture()
+
+    def test_opencv_decode_limit_error_is_a_camera_domain_error(self):
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.side_effect = [b"not-an-image", b""]
+        source = CameraSource({"source": "http://camera/snapshot"})
+        with mock.patch("urllib.request.urlopen", return_value=response), mock.patch(
+            "server.camera.cv2.imdecode", side_effect=cv2.error("decode limit")
+        ):
+            with self.assertRaisesRegex(CameraError, "decoder|pixel limit"):
+                source.capture()
+
+    def test_network_capture_opens_with_backend_deadlines(self):
+        device = mock.MagicMock()
+        device.open.return_value = True
+        device.isOpened.return_value = True
+        device.read.return_value = (True, np.zeros((100, 100, 3), dtype=np.uint8))
+        with mock.patch("server.camera.cv2.VideoCapture", return_value=device) as ctor:
+            CameraSource({"source": "rtsp://camera/stream"}, timeout=1.25).capture()
+        ctor.assert_called_once_with()
+        device.open.assert_called_once_with(
+            "rtsp://camera/stream",
+            cv2.CAP_ANY,
+            [
+                cv2.CAP_PROP_OPEN_TIMEOUT_MSEC,
+                1250,
+                cv2.CAP_PROP_READ_TIMEOUT_MSEC,
+                1250,
+            ],
+        )
 
 
 if __name__ == "__main__":

@@ -1,3 +1,4 @@
+import threading
 import time
 import unittest
 from unittest import mock
@@ -42,7 +43,7 @@ class ApiTests(unittest.TestCase):
         response = self.client.get("/api/v2/health")
         self.assertEqual(response.status_code, 200)
         payload = response.get_json()
-        self.assertEqual(payload["version"], "3.2.2")
+        self.assertEqual(payload["version"], "3.3.0-rc1")
         self.assertFalse(payload["configured"])
         self.assertFalse(payload["transform"]["calibrated"])
 
@@ -80,12 +81,22 @@ class ApiTests(unittest.TestCase):
             [-0.476, -0.155], [-0.294, -0.405],
         ]
         samples = [
-            {"pixel_delta": [x * 100, y * 100], "machine_delta": [x, y]}
+            {
+                "pixel_delta": [x * 100, y * 100],
+                "machine_delta": [x, y],
+                "stability_px": 0.2,
+            }
             for x, y in moves
         ]
         fitted = self.client.post(
             "/api/v2/transform/fit",
-            json={"samples": samples, "frame_width": 640, "frame_height": 480},
+            json={
+                "samples": samples,
+                "frame_width": 640,
+                "frame_height": 480,
+                "base_stability_px": 0.2,
+                "max_uncertainty_mm": 0.015,
+            },
         )
         self.assertEqual(fitted.status_code, 200, fitted.get_json())
         correction = self.client.post(
@@ -109,6 +120,115 @@ class ServiceConcurrencyTests(unittest.TestCase):
                 state.configure({"camera_source": "unused"})
         finally:
             state.close()
+
+    @mock.patch("server.app.resolve_camera")
+    @mock.patch("server.app.CameraSource")
+    def test_failed_reconfigure_keeps_previous_runtime_and_clears_gate(
+        self, source, resolver
+    ):
+        previous = FakeCamera()
+        candidate = FakeCamera()
+        candidate.capture = mock.MagicMock(side_effect=RuntimeError("capture failed"))
+        source.return_value = candidate
+        resolver.return_value = {
+            "name": "replacement",
+            "location": "tool",
+            "source": "unused",
+            "rotation": 0,
+            "discovered": True,
+        }
+        state = ServiceState()
+        state.camera = previous
+        try:
+            with self.assertRaisesRegex(RuntimeError, "capture failed"):
+                state.configure({"camera_source": "unused"})
+            self.assertIs(state.camera, previous)
+            self.assertFalse(previous.closed)
+            self.assertTrue(candidate.closed)
+            self.assertFalse(state.configuring)
+        finally:
+            state.close()
+
+    @mock.patch("server.app.resolve_camera")
+    @mock.patch("server.app.CameraSource")
+    def test_preview_encode_failure_cannot_partially_swap_camera(
+        self, source, resolver
+    ):
+        previous = FakeCamera()
+        candidate = FakeCamera()
+        source.return_value = candidate
+        resolver.return_value = {
+            "name": "replacement",
+            "location": "tool",
+            "source": "unused",
+            "rotation": 0,
+            "discovered": True,
+        }
+        state = ServiceState()
+        state.camera = previous
+        try:
+            with mock.patch(
+                "server.app.cv2.imencode", side_effect=RuntimeError("encode failed")
+            ):
+                with self.assertRaisesRegex(RuntimeError, "encode failed"):
+                    state.configure({"camera_source": "unused"})
+            self.assertIs(state.camera, previous)
+            self.assertFalse(previous.closed)
+            self.assertTrue(candidate.closed)
+            self.assertFalse(state.configuring)
+        finally:
+            state.close()
+
+    @mock.patch("server.app.resolve_camera")
+    @mock.patch("server.app.CameraSource")
+    def test_job_cannot_start_while_reconfigure_is_capturing(
+        self, source, resolver
+    ):
+        entered = threading.Event()
+        release = threading.Event()
+        candidate = FakeCamera()
+
+        def blocked_capture():
+            entered.set()
+            release.wait(2)
+            return frame()
+
+        candidate.capture = blocked_capture
+        source.return_value = candidate
+        resolver.return_value = {
+            "name": "replacement",
+            "location": "tool",
+            "source": "unused",
+            "rotation": 0,
+            "discovered": True,
+        }
+
+        state = ServiceState()
+        state.camera = FakeCamera()
+        state.detector = mock.MagicMock()
+        state.detector.profile = {"schema_version": 1}
+        errors = []
+        worker = threading.Thread(
+            target=lambda: self._configure_in_thread(state, errors)
+        )
+        worker.start()
+        self.assertTrue(entered.wait(1), "configure did not reach camera capture")
+        try:
+            with self.assertRaisesRegex(DetectionError, "configur"):
+                state.start_job("detect")
+        finally:
+            release.set()
+            worker.join(2)
+            state.close()
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(errors, [])
+
+    @staticmethod
+    def _configure_in_thread(state, errors):
+        try:
+            state.configure({"camera_source": "unused"})
+        except Exception as exc:  # captured for assertion in the test thread
+            errors.append(exc)
 
 
 if __name__ == "__main__":

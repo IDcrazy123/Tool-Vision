@@ -57,8 +57,11 @@ the native-resolution frame. Klipper then executes the ten kTAMV calibration
 moves on a 0.5 mm radius, fits a robust pixel-to-machine transform and centers
 the nozzle iteratively.
 
-At least 8 of 10 useful calibration points are required. A transform must also
-have full rank, sensible conditioning and pass residual/outlier validation.
+At least 8 of 10 useful calibration points are required. Transform schema 2
+must also have full rank, sensible conditioning, pass both training and
+leave-one-out residual validation, and prove that measured pixel noise maps to
+no more than the centering tolerance. Nominal correction plus estimated
+uncertainty must fit inside that tolerance before centering succeeds.
 
 For a tool centered above the same camera target:
 
@@ -87,7 +90,9 @@ available and retains native resolution.
 Setup evaluates several kTAMV-style preprocessing/polarity strategies, clusters
 their detections over a frame burst and learns the stable candidate nearest the
 camera center. Runtime detection uses the learned strategy and geometry rather
-than user-entered OpenCV thresholds.
+than user-entered OpenCV thresholds. A runtime frame with multiple spatially
+distinct profile matches is rejected; it is never resolved merely by choosing
+the closest candidate.
 
 Focus is reported as a relative sharpness metric from the detected nozzle area.
 There is deliberately no universal absolute focus cutoff: focus-operator
@@ -95,15 +100,28 @@ performance depends on noise, contrast, saturation and window size. A setup is
 accepted only when the nozzle is detected consistently and the motion-to-pixel
 transform validates; this is the practical "image is usable" test.
 
+After Klippy commands a centering move, the next stable observation must also
+show image displacement above the run's stability/quantization floor while the
+nozzle remains outside tolerance. This catches repeated cached/frozen frames;
+it does not replace the real-image corpus and HIL gate. The full source review
+and remaining limitations are recorded in
+[`DETECTION_DESIGN.md`](DETECTION_DESIGN.md).
+
+Camera capture has two resource boundaries: compressed HTTP bytes and decoded
+pixels. Network sources supported by OpenCV's FFmpeg/GStreamer timeout
+properties receive open/read deadlines at `VideoCapture.open`. Because those
+properties are backend-specific, local device hang/reconnect behavior remains
+an open validation item rather than a universal guarantee.
+
 ## Motion safety
 
 - XYZ must be homed and the printer must not be printing.
 - Setup requires the configured reference tool already mounted. It never
   performs a surprise tool change after the operator manually positions it.
-- Version 3.2.2 and earlier assume the reference tool's configured XYZ offset is
-  zero when teaching and revisiting a station. This condition is not yet
-  enforced in code; automatic all-tool station-envelope preflight is tracked as
-  R-002 in the risk register.
+- The current implementation, including `v3.3.0-rc1`, assumes the reference
+  tool's configured XYZ offset is zero when teaching and revisiting a station.
+  This condition is not yet enforced in code; automatic all-tool
+  station-envelope preflight is tracked as R-002 in the risk register.
 - All targets are checked against kinematic limits before motion.
 - The switch must be open before probing.
 - Calibration owns the tool-heater targets: it defaults to the source-backed
@@ -135,6 +153,13 @@ tool_vision_state.py
 The host service never commands printer motion. The Klipper extension never
 imports OpenCV or NumPy. This boundary keeps camera latency and image processing
 away from Klipper's motion/MCU scheduling path.
+
+The host service is memory-only. Before every XY calibration, Klippy
+reconfigures it from the learned profile/transform stored in Klipper-owned
+state. Reconfiguration is a gated state transition: jobs and transform calls
+cannot start during candidate camera capture; a failed candidate leaves the
+previous runtime intact. This is necessary because Moonraker may restart the
+host and Klipper services independently during an update.
 
 ## Moonraker-managed deployment
 

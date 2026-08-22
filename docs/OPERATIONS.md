@@ -43,6 +43,16 @@ fresh install/upgrade cần theo checklist và giữ backup cho đến khi healt
 Không chạy `git pull` trực tiếp cho cập nhật bình thường. Repository runtime phải
 sạch để Moonraker quản lý đúng.
 
+### Migration `v3.3.0-rc1`
+
+Đây là release candidate thay đổi detector/transform, chưa phải stable đa phần
+cứng. Trước update, backup tối thiểu config và
+`Tool-Vision/tool_vision_state.json`. Transform schema 1 của `v3.2.2` không có
+uncertainty/holdout evidence và không được chuyển đổi bằng cách đoán; sau update
+phải gắn reference tool, kiểm tra đường ±0,5 mm rồi chạy lại
+`TV_SETUP_CAMERA`. Switch station/Z state không bị schema camera này thay đổi.
+Không rollout ra máy khác trước khi canary HIL pass.
+
 ## Setup camera
 
 Pre-check:
@@ -60,8 +70,10 @@ TV_SETUP_CAMERA
 ```
 
 Chỉ chấp nhận khi có thông báo vị trí, sharpness, transform RMS và số sample.
-Sau setup, backup state mới. Nếu setup fail, không lặp vô hạn; xem preview/log,
-kiểm tra camera/focus/light/nozzle rồi mới thử lại.
+Transform còn phải pass held-out error và uncertainty; runtime từ chối nhiều vật
+cùng khớp hoặc frame không phản ánh correction move. Sau setup, backup state
+mới. Nếu setup fail, không lặp vô hạn; xem preview/log, kiểm tra
+camera/focus/light/nozzle rồi mới thử lại.
 
 ## Setup switch
 
@@ -150,6 +162,9 @@ Không mở port 8085 trực tiếp ra LAN/Internet; service mặc định khôn
 2. Kiểm tra camera trong Moonraker/Crowsnest và snapshot có thực sự thay đổi.
 3. Restart camera service trước, rồi `tool-vision` nếu cần.
 4. Nếu resolution/rotation/focus/mount thay đổi, setup camera lại.
+5. Lỗi “did not return a fresh frame” nghĩa là ảnh sau commanded move không đổi
+   vượt noise floor; sửa snapshot cache/Crowsnest stream trước khi thử lại,
+   không hạ gate bằng cấu hình tùy ý.
 
 ### Switch stuck/no trigger
 

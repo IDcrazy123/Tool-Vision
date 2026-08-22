@@ -5,9 +5,29 @@ actual stream. This module deliberately has no printer-motion responsibility.
 """
 
 import json
+import math
+import os
 import re
 import urllib.parse
 import urllib.request
+
+# OpenCV reads this setting before decoding. Apply the project resource ceiling
+# before importing cv2; the explicit post-decode check below remains the final
+# guard when another module imported OpenCV first.
+try:
+    from .limits import MAX_FRAME_PIXELS
+except ImportError:  # pragma: no cover - direct script execution
+    from limits import MAX_FRAME_PIXELS
+
+try:
+    _configured_opencv_limit = int(
+        os.environ.get("OPENCV_IO_MAX_IMAGE_PIXELS", MAX_FRAME_PIXELS)
+    )
+except ValueError:
+    _configured_opencv_limit = MAX_FRAME_PIXELS
+os.environ["OPENCV_IO_MAX_IMAGE_PIXELS"] = str(
+    min(max(1, _configured_opencv_limit), MAX_FRAME_PIXELS)
+)
 
 import cv2
 import numpy as np
@@ -132,7 +152,10 @@ def resolve_camera(settings):
     if not source:
         raise CameraError("selected camera has no snapshot_url or stream_url")
 
-    rotation = int(camera.get("rotation", 0) or 0)
+    try:
+        rotation = int(camera.get("rotation", 0) or 0)
+    except (TypeError, ValueError):
+        raise CameraError("Moonraker camera rotation is invalid")
     if rotation not in (0, 90, 180, 270):
         raise CameraError("Moonraker camera rotation must be 0, 90, 180, or 270")
     return {
@@ -150,11 +173,27 @@ def resolve_camera(settings):
 class CameraSource:
     """Capture a frame without resizing it."""
 
-    def __init__(self, descriptor, timeout=5.0, max_bytes=12 * 1024 * 1024):
+    NETWORK_SCHEMES = frozenset(("rtsp", "rtmp", "rtp", "udp", "tcp", "srt"))
+
+    def __init__(
+        self,
+        descriptor,
+        timeout=5.0,
+        max_bytes=12 * 1024 * 1024,
+        max_pixels=MAX_FRAME_PIXELS,
+    ):
         self.descriptor = dict(descriptor)
-        self.source = self.descriptor["source"]
-        self.timeout = float(timeout)
-        self.max_bytes = int(max_bytes)
+        try:
+            self.source = self.descriptor["source"]
+            self.timeout = float(timeout)
+            self.max_bytes = int(max_bytes)
+            self.max_pixels = int(max_pixels)
+        except (KeyError, TypeError, ValueError):
+            raise CameraError("camera source limits are invalid")
+        if not math.isfinite(self.timeout) or self.timeout <= 0:
+            raise CameraError("camera timeout must be a positive finite value")
+        if self.max_bytes <= 0 or self.max_pixels <= 0:
+            raise CameraError("camera resource limits must be positive")
         self.capture_device = None
 
     def close(self):
@@ -167,7 +206,9 @@ class CameraSource:
             frame = self._capture_http()
         else:
             frame = self._capture_opencv()
-        return self._apply_metadata(frame)
+        frame = self._apply_metadata(frame)
+        self._validate_decoded_frame(frame)
+        return frame
 
     def _is_http_source(self):
         return isinstance(self.source, str) and self.source.lower().startswith(
@@ -204,7 +245,14 @@ class CameraSource:
             )
         if len(data) > self.max_bytes:
             raise CameraError("camera frame exceeds the safety byte limit")
-        frame = cv2.imdecode(np.frombuffer(data, dtype=np.uint8), cv2.IMREAD_COLOR)
+        try:
+            frame = cv2.imdecode(
+                np.frombuffer(data, dtype=np.uint8), cv2.IMREAD_COLOR
+            )
+        except cv2.error:
+            raise CameraError(
+                "camera image decoder rejected the frame or its pixel limit"
+            )
         if frame is None:
             raise CameraError("camera response is not a decodable image")
         return frame
@@ -214,7 +262,30 @@ class CameraSource:
         if isinstance(source, str) and source.strip().isdigit():
             source = int(source.strip())
         if self.capture_device is None:
-            self.capture_device = cv2.VideoCapture(source)
+            if self._is_network_opencv_source(source):
+                # OpenCV documents OPEN/READ_TIMEOUT as open-only properties
+                # supported by FFmpeg/GStreamer. Do not pass them to local V4L
+                # devices, whose backends may reject unknown constructor params.
+                timeout_ms = max(1, int(round(self.timeout * 1000.0)))
+                self.capture_device = cv2.VideoCapture()
+                opened = self.capture_device.open(
+                    source,
+                    cv2.CAP_ANY,
+                    [
+                        cv2.CAP_PROP_OPEN_TIMEOUT_MSEC,
+                        timeout_ms,
+                        cv2.CAP_PROP_READ_TIMEOUT_MSEC,
+                        timeout_ms,
+                    ],
+                )
+                if not opened:
+                    self.close()
+                    raise CameraError(
+                        "OpenCV cannot open selected network camera '%s'"
+                        % self.descriptor.get("name", "camera")
+                    )
+            else:
+                self.capture_device = cv2.VideoCapture(source)
         if not self.capture_device.isOpened():
             self.close()
             raise CameraError(
@@ -226,6 +297,23 @@ class CameraSource:
             self.close()
             raise CameraError("OpenCV camera returned no frame")
         return frame
+
+    def _is_network_opencv_source(self, source):
+        if not isinstance(source, str):
+            return False
+        return urllib.parse.urlparse(source).scheme.casefold() in self.NETWORK_SCHEMES
+
+    def _validate_decoded_frame(self, frame):
+        if frame is None or not hasattr(frame, "shape") or len(frame.shape) != 3:
+            raise CameraError("camera returned an invalid decoded frame")
+        if frame.shape[2] != 3 or getattr(frame, "dtype", None) != np.uint8:
+            raise CameraError("camera frame must contain 8-bit BGR pixels")
+        pixels = int(frame.shape[0]) * int(frame.shape[1])
+        if pixels > self.max_pixels:
+            raise CameraError(
+                "camera frame exceeds the safety pixel limit (%d > %d)"
+                % (pixels, self.max_pixels)
+            )
 
     def _apply_metadata(self, frame):
         if self.descriptor.get("flip_horizontal"):

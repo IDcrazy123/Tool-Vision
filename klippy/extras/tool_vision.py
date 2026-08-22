@@ -19,7 +19,8 @@ class ToolVisionError(RuntimeError):
 
 
 class ToolVision:
-    VERSION = "3.2.2"
+    VERSION = "3.3.0-rc1"
+    TRANSFORM_SCHEMA_VERSION = 2
     # Axiscope's official configuration and the legacy toolchanger calibration
     # both use 150 C. Keep it in code so normal users do not need another cfg
     # value or console parameter merely to get repeatable heated Z results.
@@ -371,6 +372,9 @@ class ToolVision:
                                 float(observation["y"]) - base_pixel[1],
                             ],
                             "machine_delta": list(move),
+                            "stability_px": float(
+                                observation.get("stability_px", 0.0)
+                            ),
                         }
                     )
                     gcmd.respond_info(
@@ -396,6 +400,10 @@ class ToolVision:
             "frame_width": int(initial_observation["frame_width"]),
             "frame_height": int(initial_observation["frame_height"]),
             "target_ratio": [0.5, 0.5],
+            "base_stability_px": float(
+                initial_observation.get("stability_px", 0.0)
+            ),
+            "max_uncertainty_mm": self.CENTER_TOLERANCE,
         }
         result = self.client.request(
             "POST", "/api/v2/transform/fit", payload, timeout=8.0
@@ -415,6 +423,8 @@ class ToolVision:
     def _center_nozzle(self):
         start = self._raw_position()
         latest = None
+        previous_observation = None
+        move_was_commanded = False
         for _ in range(self.CENTER_ITERATIONS):
             self._settle()
             latest = self._detect()
@@ -428,11 +438,48 @@ class ToolVision:
                 },
             )
             correction = result.get("correction", {})
-            move_x = float(correction.get("move_x", 0.0))
-            move_y = float(correction.get("move_y", 0.0))
+            try:
+                move_x = float(correction["move_x"])
+                move_y = float(correction["move_y"])
+                uncertainty = float(correction["estimated_uncertainty_mm"])
+            except (KeyError, TypeError, ValueError):
+                raise ToolVisionError(
+                    "host service returned an incomplete camera correction"
+                )
+            if (
+                not math.isfinite(move_x)
+                or not math.isfinite(move_y)
+                or not math.isfinite(uncertainty)
+                or uncertainty < 0.0
+            ):
+                raise ToolVisionError(
+                    "host service returned a non-finite camera correction"
+                )
             distance = math.hypot(move_x, move_y)
-            if distance <= self.CENTER_TOLERANCE:
+            # Reserve part of the centering tolerance for observation/model
+            # uncertainty; a small nominal correction is not sufficient when
+            # its own error bound would cross the acceptance boundary.
+            if distance + uncertainty <= self.CENTER_TOLERANCE:
                 return self._raw_position(), latest
+            if move_was_commanded and previous_observation is not None:
+                observed_shift = math.hypot(
+                    float(latest["x"]) - float(previous_observation["x"]),
+                    float(latest["y"]) - float(previous_observation["y"]),
+                )
+                # A stable detector cannot prove freshness by returning the
+                # same cached frame repeatedly. The transform's sensitivity
+                # gate guarantees an above-tolerance correction should move
+                # farther than this observation/quantization noise floor.
+                freshness_floor = max(
+                    0.5,
+                    float(previous_observation.get("stability_px", 0.0)),
+                    float(latest.get("stability_px", 0.0)),
+                )
+                if observed_shift <= freshness_floor:
+                    raise ToolVisionError(
+                        "camera did not return a fresh frame after the commanded "
+                        "move; check for a frozen/cached stream and retry"
+                    )
             scale = min(0.85, self.CENTER_MAX_STEP / max(distance, 1e-12))
             current = self._raw_position()
             target = [
@@ -444,7 +491,9 @@ class ToolVision:
                 raise ToolVisionError(
                     "camera correction exceeded 2 mm; move nozzle nearer center and retry"
                 )
+            previous_observation = latest
             self._move_raw(target, self.FINE_SPEED)
+            move_was_commanded = True
         raise ToolVisionError(
             "nozzle did not converge to camera center within %d iterations"
             % self.CENTER_ITERATIONS
@@ -583,11 +632,32 @@ class ToolVision:
             raise ToolVisionError("TEMP must be a finite value of 0 or higher")
         if "X" in mode and "camera" not in self.state["stations"]:
             raise ToolVisionError("run TOOL_VISION_SETUP_CAMERA first")
+        if "X" in mode:
+            vision_state = self.state.get("vision", {})
+            profile = vision_state.get("profile")
+            transform = vision_state.get("transform")
+            if not isinstance(profile, dict) or not isinstance(transform, dict):
+                raise ToolVisionError("run TOOL_VISION_SETUP_CAMERA first")
+            try:
+                transform_schema = int(transform.get("schema_version", -1))
+            except (TypeError, ValueError):
+                transform_schema = -1
+            if transform_schema != self.TRANSFORM_SCHEMA_VERSION:
+                raise ToolVisionError(
+                    "saved camera transform uses an older safety schema; "
+                    "backup state and run TOOL_VISION_SETUP_CAMERA again"
+                )
         if "Z" in mode:
             if self.probe_multi_axis is None:
                 raise ToolVisionError("Z calibration requires pin in [tool_vision]")
             if "switch" not in self.state["stations"]:
                 raise ToolVisionError("run TOOL_VISION_SETUP_SWITCH first")
+        if "X" in mode:
+            # The host process is restarted independently by systemd/Moonraker
+            # and intentionally keeps no calibration on disk. Rehydrate it
+            # after all local preflight checks but before heating/toolchange so
+            # calibration cannot use an empty/stale service runtime.
+            self._configure_server(include_learned=True)
 
         tools = self.adapter.tool_numbers()
         tools = [self.reference_tool] + [

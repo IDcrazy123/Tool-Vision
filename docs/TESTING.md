@@ -3,13 +3,15 @@
 ## Baseline hiện tại
 
 Baseline audit `v3.2.1` có 46 test pass. `v3.2.2` thêm contract test cho đường
-dẫn dữ liệu và có 47 test pass ngày 2026-08-22. Coverage bên dưới được đo trên
-baseline audit `v3.2.1`:
+dẫn dữ liệu và có 47 test pass. Nhánh `v3.3.0-rc1` có 70 test pass ngày
+2026-08-22 sau khi thêm regression detector/transform/camera/concurrency/host
+rehydration. Branch coverage của RC được đo cùng suite đó:
 
-- toàn cây gồm test: 69%;
-- `klippy/extras/tool_vision.py`: 32%;
+- toàn cây gồm test: 73% (baseline 69%);
+- `klippy/extras/tool_vision.py`: 40% (baseline 32%);
 - `klippy/extras/tool_vision_client.py`: 15%;
-- host service modules: khoảng 64–84%.
+- host service modules thay đổi: camera 71%, detection 83%, transform 75%, app
+  75%.
 
 Coverage thấp ở hai module điều phối safety là rủi ro, không chỉ là chỉ số style.
 Mục tiêu ngắn hạn là không giảm baseline; mục tiêu trước release stable là các
@@ -150,3 +152,20 @@ XY/Z và baseline comparison. Trước khi có threshold được phê duyệt, 
 | Detector/transform behavior | corpus replay + HIL repeatability |
 
 Không dùng máy production làm nơi phát hiện test đầu tiên.
+
+## Evidence `v3.3.0-rc1` hiện có
+
+Unit/component suite đã tái hiện rồi khóa các behavior sau:
+
+- hai vật khác vị trí cùng khớp detector phải fail;
+- grayscale/profile threshold sai phải thành domain error;
+- transform tiny-pixel, rank thấp, >25% outlier hoặc quá 64 sample phải fail;
+- correction có uncertainty và schema contract phải khớp hai process;
+- HTTP frame vượt pixel budget và RTSP open thiếu deadline contract;
+- configure/start race có barrier, failed configure giữ runtime cũ;
+- frozen observation sau commanded move, correction thiếu field và acceptance
+  bỏ qua uncertainty phải fail;
+- host rehydrate xảy ra trước heat/toolchange; transform schema cũ fail sớm.
+
+70 test này không thay thế corpus/HIL. R-005/R-006/R-010/R-017 chưa được đóng
+chỉ bằng ảnh tròn tổng hợp và fake camera.

@@ -5,6 +5,31 @@
 
 ## Unreleased
 
+### Added
+
+- `v3.3.0-rc1`: transform schema 2 với leave-one-out validation, pixel
+  sensitivity và uncertainty evidence.
+- Camera resource bounds cho decoded pixels và OpenCV network open/read
+  deadlines.
+- Regression cho detector ambiguity, frozen frame, correction contract,
+  configure race và host rehydrate sau service restart.
+
+### Changed
+
+- Runtime detection fail-closed khi nhiều vật khác vị trí cùng khớp learned
+  nozzle profile.
+- Centering tính uncertainty vào acceptance và bắt buộc frame mới phản ánh
+  commanded move.
+- XY calibration nạp lại host runtime từ state trước khi heat/toolchange.
+- Transform schema 1 phải backup rồi dạy lại bằng `TV_SETUP_CAMERA`; không đoán
+  migration cho dữ liệu stability chưa tồn tại.
+
+### Fixed
+
+- Không còn coi correction thiếu `move_x`/`move_y` là zero/success.
+- Không còn cửa sổ để start job trên camera cũ trong lúc configure camera mới.
+- Failed configure giữ nguyên runtime cũ và nhả cờ `configuring`.
+
 ### Documentation
 
 - Thêm full-source audit 2026-08-22 và risk register.
@@ -13,8 +38,6 @@
   runbook.
 - Thêm contributing, security, ADR và các mẫu hồ sơ thay đổi/release/incident.
 - Thêm `AGENTS.md` tự nạp cùng quy ước viết code/chú thích chi tiết.
-
-Không có thay đổi logic đo trong mục Unreleased này.
 
 ## 3.2.2 — 2026-08-22
 

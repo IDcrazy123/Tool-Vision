@@ -24,18 +24,19 @@ chứng đóng.
 | R-002 | P1 | Reference offset/station envelope chưa được preflight | Open | WS1 |
 | R-003 | P1 | Khôi phục tool, G-code state và retract khi lỗi chưa chắc chắn | Open | WS1 |
 | R-004 | P1 | Heater cleanup/capability khác nhau giữa phần cứng | Open | WS1 |
-| R-005 | P1 | Transform và detector thiếu gate vật lý/frozen-frame | Open | WS2 |
+| R-005 | P1 | Transform và detector thiếu gate vật lý/frozen-frame | Mitigating | WS2 |
 | R-006 | P1 | Không có corpus ảnh thật, HIL matrix và chuẩn độ lặp | Open | WS2 |
 | R-007 | P1 | Install/upgrade/uninstall chưa transactional | Open | WS3 |
 | R-008 | P1 | Dependency chưa khóa, không có CI/Python matrix | Open | WS3 |
 | R-009 | P1 | State migration, backup và lịch sử kết quả chưa đầy đủ | Open | WS3 |
-| R-010 | P1 | OpenCV capture có thể treo; ảnh giải nén chưa giới hạn pixel | Open | WS2 |
+| R-010 | P1 | OpenCV capture có thể treo; ảnh giải nén chưa giới hạn pixel | Mitigating | WS2 |
 | R-011 | P1 | Tương thích toolchanger mới/cũ chưa có contract integration | Open | WS1 |
 | R-012 | P1 | Repository chưa có LICENSE/chính sách quyền sử dụng rõ ràng | Open | WS0 |
-| R-013 | P2 | Race giữa configure và start_job trong host service | Open | WS2 |
+| R-013 | P2 | Race giữa configure và start_job trong host service | Mitigating | WS2 |
 | R-014 | P2 | API không auth nếu bind ra ngoài loopback | Open | WS3 |
 | R-015 | P2 | Quan sát lỗi, run ID và audit trail còn yếu | Open | WS4 |
-| R-016 | P3 | Version khai báo ở nhiều file có thể lệch | Open | WS0 |
+| R-016 | P3 | Version khai báo ở nhiều file có thể lệch | Mitigating | WS0 |
+| R-017 | P1 | Host restart làm mất camera runtime trước XY calibration | Mitigating | WS2 |
 
 ## Phân tích và điều kiện đóng
 
@@ -112,6 +113,12 @@ chứng đóng.
 - Giải pháp: gate sensitivity từ chính sample, holdout/return-to-center check,
   freshness evidence, ambiguity margin và uncertainty theo run. Threshold chỉ
   được chốt từ corpus/HIL, không thêm “magic number” chưa đo.
+- Giảm thiểu `v3.3.0-rc1`: runtime từ chối nhiều candidate khác vị trí;
+  transform schema 2 thêm leave-one-out, sensitivity/uncertainty; correction
+  bắt buộc payload hữu hạn và tính uncertainty vào acceptance; centering dừng
+  khi frame sau move không đổi quá noise floor. Có regression synthetic nhưng
+  chưa có corpus/HIL. Evidence code: `b94876d`; xem
+  [`DETECTION_DESIGN.md`](DETECTION_DESIGN.md).
 - Đóng khi: corpus có frozen/distractor/blur/scale cực đoan bị từ chối và bộ ảnh
   hợp lệ không regression theo tiêu chí đã phê duyệt.
 
@@ -170,6 +177,11 @@ chứng đóng.
 - Tác động: RTSP/device treo worker hoặc ảnh bất thường gây CPU/RAM cao trên SBC.
 - Giải pháp: backend capture có deadline/reopen, giới hạn dimension/pixel trước
   pipeline, đo CPU/RSS và learned ROI ở runtime.
+- Giảm thiểu `v3.3.0-rc1`: giới hạn HTTP nén 12 MiB và decode 16 MP; đặt
+  `OPENCV_IO_MAX_IMAGE_PIXELS` trước import OpenCV; nguồn mạng truyền open/read
+  timeout ở `VideoCapture.open`. Timeout này phụ thuộc backend chính thức, local
+  device hang/reconnect và memory/RSS thật vẫn chưa được chứng minh. Evidence
+  code: `b94876d`.
 - Đóng khi: stream treo, reconnect, ảnh quá lớn và camera mất giữa job đều kết
   thúc có giới hạn, không làm service mất đáp ứng.
 
@@ -197,10 +209,13 @@ chứng đóng.
 
 ### R-013 — Configure race
 
-`ServiceState.configure()` kiểm tra `active_job`, nhả lock để mở/capture camera,
-rồi mới lock và swap. Một request khác có thể start job bằng camera cũ trong cửa
-sổ đó. Cần trạng thái `configuring` hoặc serialize tất cả mutation qua cùng
-executor; đóng bằng concurrency test có barrier.
+Baseline `ServiceState.configure()` kiểm tra `active_job`, nhả lock để
+mở/capture camera, rồi mới lock và swap; request khác có thể start job bằng
+camera cũ trong cửa sổ đó. `v3.3.0-rc1` thêm trạng thái `configuring`, chặn
+job/transform mutation, chỉ swap sau first-frame validation và giữ runtime cũ
+nếu fail. Barrier concurrency test và failure cleanup test đã pass; giữ trạng
+thái `Mitigating` cho đến khi nhánh được review/merge. Evidence code:
+`b94876d`.
 
 ### R-014 — API exposure
 
@@ -219,7 +234,18 @@ quản lý. Cần structured result/event và support bundle có redaction.
 
 Version đang lặp ở Klippy, server fallback, package và test. Chuyển sang một
 nguồn release được tạo tại build/install; thêm contract test so mọi nơi trước
-tag.
+tag. `v3.3.0-rc1` đã thêm contract test cho ba runtime source nhưng chưa hợp
+nhất thành một nguồn build-time, nên rủi ro mới chỉ ở `Mitigating`.
+
+### R-017 — Host runtime mất sau restart
+
+Host service giữ camera/detector/transform trong RAM. Baseline chỉ configure khi
+`TV_SETUP_CAMERA`; sau Moonraker update hoặc service restart, station vẫn có
+trong Klippy state nhưng host trống, làm calibration XY fail muộn sau khi đã có
+thể heat/toolchange. `v3.3.0-rc1` rehydrate host từ state trước mọi heat hoặc
+toolchange của mode XY, đồng thời fail sớm với transform schema cũ. Unit test đã
+kiểm tra thứ tự trong `b94876d`; còn cần HIL service-restart scenario trước khi
+đóng.
 
 ## Quy trình cập nhật register
 
