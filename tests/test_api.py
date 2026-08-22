@@ -42,7 +42,7 @@ class ApiTests(unittest.TestCase):
         response = self.client.get("/api/v2/health")
         self.assertEqual(response.status_code, 200)
         payload = response.get_json()
-        self.assertEqual(payload["version"], "3.2.1")
+        self.assertEqual(payload["version"], "3.2.2")
         self.assertFalse(payload["configured"])
         self.assertFalse(payload["transform"]["calibrated"])
 

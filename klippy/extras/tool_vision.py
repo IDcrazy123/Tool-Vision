@@ -19,7 +19,7 @@ class ToolVisionError(RuntimeError):
 
 
 class ToolVision:
-    VERSION = "3.2.1"
+    VERSION = "3.2.2"
     # Axiscope's official configuration and the legacy toolchanger calibration
     # both use 150 C. Keep it in code so normal users do not need another cfg
     # value or console parameter merely to get repeatable heated Z results.
@@ -72,12 +72,14 @@ class ToolVision:
 
         self.state_file = os.path.expanduser(
             config.get(
-                "state_file", "~/printer_data/config/tool_vision_state.json"
+                "state_file",
+                "~/printer_data/config/Tool-Vision/tool_vision_state.json",
             )
         )
         self.result_file = os.path.expanduser(
             config.get(
-                "result_file", "~/printer_data/config/tool_vision_results.json"
+                "result_file",
+                "~/printer_data/config/Tool-Vision/tool_vision_results.json",
             )
         )
         self.state_store = StateStore(self.state_file, self.VERSION)

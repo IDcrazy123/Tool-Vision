@@ -88,6 +88,43 @@ install_runtime_file() {
         "${source_path}" "${target_path}"
 }
 
+backup_user_file() {
+    local source_path="$1"
+    local relative_path="$2"
+    local backup_path="${BACKUP_DIR}/${relative_path}"
+
+    if [[ -e "${backup_path}" ]]; then
+        echo "ERROR: refusing to overwrite backup: ${backup_path}" >&2
+        exit 1
+    fi
+    sudo -u "${INSTALL_USER}" mkdir -p -- "$(dirname -- "${backup_path}")"
+    sudo -u "${INSTALL_USER}" cp -a -- "${source_path}" "${backup_path}"
+}
+
+migrate_legacy_data_file() {
+    local config_option="$1"
+    local legacy_path="$2"
+    local target_path="$3"
+
+    # An explicit path is user-owned and must never be moved automatically.
+    if grep -Eq "^[[:space:]]*${config_option}[[:space:]]*[:=]" \
+        "${CONFIG_TARGET}"; then
+        return
+    fi
+    if [[ -e "${legacy_path}" && ! -e "${target_path}" ]]; then
+        backup_user_file "${legacy_path}" \
+            "legacy-runtime/$(basename -- "${legacy_path}")"
+        sudo -u "${INSTALL_USER}" mkdir -p -- "$(dirname -- "${target_path}")"
+        sudo -u "${INSTALL_USER}" mv -- "${legacy_path}" "${target_path}"
+        echo "  Migrated generated data to ${target_path}"
+    elif [[ -e "${legacy_path}" && -e "${target_path}" ]]; then
+        echo "WARNING: legacy and current generated files both exist:" >&2
+        echo "  ${legacy_path}" >&2
+        echo "  ${target_path}" >&2
+        echo "Preserving both; compare them before manual cleanup." >&2
+    fi
+}
+
 INSTALL_USER="${TOOL_VISION_USER:-${SUDO_USER:-$(id -un)}}"
 INSTALL_GROUP="$(id -gn "${INSTALL_USER}")"
 USER_HOME="$(getent passwd "${INSTALL_USER}" | cut -d: -f6)"
@@ -105,6 +142,8 @@ RUNTIME_DIR="${SOURCE_DIR}"
 CONFIG_DIR="${TOOL_VISION_CONFIG_DIR:-${USER_HOME}/printer_data/config}"
 DATA_DIR="${TOOL_VISION_DATA_DIR:-$(dirname -- "${CONFIG_DIR}")}"
 CONFIG_TARGET="${CONFIG_DIR}/Tool-Vision/tool_vision.cfg"
+BACKUP_ROOT="${TOOL_VISION_BACKUP_DIR:-${DATA_DIR}/config_backups/tool-vision}"
+BACKUP_DIR="${BACKUP_ROOT}/install-$(date +%Y%m%d-%H%M%S)"
 MOONRAKER_CONFIG="${MOONRAKER_CONFIG:-${CONFIG_DIR}/moonraker.conf}"
 MOONRAKER_ALLOWED_SERVICES="${MOONRAKER_ALLOWED_SERVICES:-${DATA_DIR}/moonraker.asvc}"
 MOONRAKER_UPDATE_CONFIG="${CONFIG_DIR}/Tool-Vision/moonraker_update_manager.conf"
@@ -206,14 +245,24 @@ if [[ ! -e "${CONFIG_TARGET}" ]]; then
     install_runtime_file "${RUNTIME_DIR}/tool_vision.cfg" "${CONFIG_TARGET}"
     echo "  Created the editable config at ${CONFIG_TARGET}"
 elif grep -Eq '^# Tool( )?Vision 2' "${CONFIG_TARGET}"; then
-    CONFIG_BACKUP="${CONFIG_TARGET}.pre-v3-$(date +%Y%m%d-%H%M%S)"
-    sudo -u "${INSTALL_USER}" cp -a -- "${CONFIG_TARGET}" "${CONFIG_BACKUP}"
+    CONFIG_BACKUP="${BACKUP_DIR}/config/tool_vision.cfg.pre-v3"
+    backup_user_file "${CONFIG_TARGET}" "config/tool_vision.cfg.pre-v3"
     sudo -u "${INSTALL_USER}" install -m 0644 \
         "${RUNTIME_DIR}/tool_vision.cfg" "${CONFIG_TARGET}"
     echo "  Migrated generated v2 config; backup: ${CONFIG_BACKUP}"
 else
     echo "  Preserved the existing editable config at ${CONFIG_TARGET}"
 fi
+
+# ToolVision 3.2.1 and older placed generated JSON in the config root. Keep
+# explicit user paths untouched; otherwise move legacy files beside the
+# editable ToolVision config and retain a timestamped backup.
+migrate_legacy_data_file "state_file" \
+    "${CONFIG_DIR}/tool_vision_state.json" \
+    "${CONFIG_DIR}/Tool-Vision/tool_vision_state.json"
+migrate_legacy_data_file "result_file" \
+    "${CONFIG_DIR}/tool_vision_results.json" \
+    "${CONFIG_DIR}/Tool-Vision/tool_vision_results.json"
 
 echo "[2/7] Creating/updating the isolated host-service environment..."
 if [[ ! -x "${VENV_DIR}/bin/python" ]]; then
@@ -228,8 +277,9 @@ for klipper_file in tool_vision.py tool_vision_client.py tool_vision_state.py \
     tool_vision_toolchanger.py; do
     KLIPPER_TARGET="${KLIPPER_EXTRAS}/${klipper_file}"
     if [[ -e "${KLIPPER_TARGET}" && ! -L "${KLIPPER_TARGET}" ]]; then
-        BACKUP_TARGET="${KLIPPER_TARGET}.pre-tool-vision-$(date +%Y%m%d-%H%M%S)"
-        sudo -u "${INSTALL_USER}" cp -a -- "${KLIPPER_TARGET}" "${BACKUP_TARGET}"
+        BACKUP_TARGET="${BACKUP_DIR}/klipper-extras/${klipper_file}"
+        backup_user_file "${KLIPPER_TARGET}" \
+            "klipper-extras/${klipper_file}"
         echo "  Preserved existing regular file as ${BACKUP_TARGET}"
     fi
     sudo -u "${INSTALL_USER}" ln -sfn -- \
@@ -265,8 +315,8 @@ sudo -u "${INSTALL_USER}" install -D -m 0644 \
 if ! grep -Eq \
     '^[[:space:]]*\[include[[:space:]]+Tool-Vision/(moonraker_update_manager\.conf|\*\.conf)\][[:space:]]*(#.*)?$' \
     "${MOONRAKER_CONFIG}"; then
-    MOONRAKER_BACKUP="${MOONRAKER_CONFIG}.pre-tool-vision-$(date +%Y%m%d-%H%M%S)"
-    sudo -u "${INSTALL_USER}" cp -a -- "${MOONRAKER_CONFIG}" "${MOONRAKER_BACKUP}"
+    MOONRAKER_BACKUP="${BACKUP_DIR}/config/moonraker.conf"
+    backup_user_file "${MOONRAKER_CONFIG}" "config/moonraker.conf"
     printf '\n# ToolVision updater (managed by ToolVision install.sh)\n%s\n' \
         "${MOONRAKER_INCLUDE}" | \
         sudo -u "${INSTALL_USER}" tee -a "${MOONRAKER_CONFIG}" >/dev/null
@@ -279,9 +329,8 @@ fi
 # authorized before Update Manager may restart them. Preserve the generated
 # default list and append only ToolVision's exact, case-sensitive unit name.
 if ! grep -Fxq 'tool-vision' "${MOONRAKER_ALLOWED_SERVICES}"; then
-    ALLOWED_SERVICES_BACKUP="${MOONRAKER_ALLOWED_SERVICES}.pre-tool-vision-$(date +%Y%m%d-%H%M%S)"
-    sudo -u "${INSTALL_USER}" cp -a -- \
-        "${MOONRAKER_ALLOWED_SERVICES}" "${ALLOWED_SERVICES_BACKUP}"
+    ALLOWED_SERVICES_BACKUP="${BACKUP_DIR}/moonraker.asvc"
+    backup_user_file "${MOONRAKER_ALLOWED_SERVICES}" "moonraker.asvc"
     # Start with a newline because third-party installers may have written the
     # existing final entry without a trailing line ending.
     printf '\ntool-vision\n' | \

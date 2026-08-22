@@ -54,6 +54,16 @@ class RewriteContracts(unittest.TestCase):
         self.assertNotIn("SET_TOOL_PARAMETER", source)
         self.assertNotIn("SAVE_CONFIG", source)
 
+    def test_default_generated_files_stay_inside_toolvision_config_dir(self):
+        source = (PROJECT / "klippy" / "extras" / "tool_vision.py").read_text(
+            encoding="utf-8"
+        )
+        sample = (PROJECT / "tool_vision.cfg").read_text(encoding="utf-8")
+        for filename in ("tool_vision_state.json", "tool_vision_results.json"):
+            expected = "~/printer_data/config/Tool-Vision/%s" % filename
+            self.assertIn(expected, source)
+            self.assertIn(expected, sample)
+
     def test_installer_links_modules_and_registers_moonraker_runtime(self):
         installer = (PROJECT / "install.sh").read_text(encoding="utf-8")
         for module in (
@@ -71,6 +81,8 @@ class RewriteContracts(unittest.TestCase):
         self.assertIn("sudo -v", installer)
         self.assertIn("moonraker.asvc", installer)
         self.assertIn("grep -Fxq 'tool-vision'", installer)
+        self.assertIn("config_backups/tool-vision", installer)
+        self.assertIn("migrate_legacy_data_file", installer)
 
         uninstaller = (PROJECT / "uninstall.sh").read_text(encoding="utf-8")
         self.assertIn("moonraker.asvc", uninstaller)

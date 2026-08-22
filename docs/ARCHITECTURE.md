@@ -100,6 +100,10 @@ transform validates; this is the practical "image is usable" test.
 - XYZ must be homed and the printer must not be printing.
 - Setup requires the configured reference tool already mounted. It never
   performs a surprise tool change after the operator manually positions it.
+- Version 3.2.1 assumes the reference tool's configured XYZ offset is zero when
+  teaching and revisiting a station. This condition is not yet enforced in code;
+  automatic all-tool station-envelope preflight is tracked as R-002 in the risk
+  register.
 - All targets are checked against kinematic limits before motion.
 - The switch must be open before probing.
 - Calibration owns the tool-heater targets: it defaults to the source-backed
@@ -148,6 +152,8 @@ directory's `moonraker.asvc`. The installer backs up that file and appends only
 other allowed services.
 
 User-owned calibration config and learned/result JSON remain under
-`printer_data/config`, outside the repository. This preserves Moonraker's
-pristine-repository invariant. The installer records the currently checked-out
-branch as `primary_branch` and never guesses or switches the user's channel.
+`printer_data/config/Tool-Vision`, outside the repository. This preserves
+Moonraker's pristine-repository invariant without cluttering the config root.
+The installer records the currently checked-out branch as `primary_branch` and
+never guesses or switches the user's channel. Installer backups are kept under
+`printer_data/config_backups/tool-vision`, not beside active configuration.
