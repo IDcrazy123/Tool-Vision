@@ -74,6 +74,154 @@ class SafeTravelTests(unittest.TestCase):
             vision._move_to_station("camera", 0)
 
 
+class CameraCenteringTests(unittest.TestCase):
+    @staticmethod
+    def make_centering_vision(observations, corrections):
+        vision = object.__new__(ToolVision)
+        position = [100.0, 100.0, 5.0]
+        observation_iterator = iter(observations)
+        correction_iterator = iter(corrections)
+        vision._raw_position = lambda: list(position)
+        vision._settle = lambda: None
+        vision._detect = lambda: next(observation_iterator)
+
+        class Client:
+            @staticmethod
+            def request(*args, **kwargs):
+                return {"correction": next(correction_iterator)}
+
+        vision.client = Client()
+
+        def move(target, speed):
+            position[:] = target
+
+        vision._move_raw = move
+        return vision
+
+    def test_centering_rejects_frame_that_does_not_reflect_commanded_move(self):
+        vision = self.make_centering_vision(
+            [
+                {
+                    "x": 600.0,
+                    "y": 360.0,
+                    "frame_width": 1280,
+                    "frame_height": 720,
+                    "stability_px": 0.1,
+                },
+                {
+                    "x": 600.0,
+                    "y": 360.0,
+                    "frame_width": 1280,
+                    "frame_height": 720,
+                    "stability_px": 0.1,
+                },
+            ],
+            [
+                {
+                    "move_x": 0.1,
+                    "move_y": 0.0,
+                    "distance_mm": 0.1,
+                    "estimated_uncertainty_mm": 0.005,
+                },
+                {
+                    "move_x": 0.1,
+                    "move_y": 0.0,
+                    "distance_mm": 0.1,
+                    "estimated_uncertainty_mm": 0.005,
+                },
+            ],
+        )
+        with self.assertRaisesRegex(ToolVisionError, "fresh|commanded move"):
+            vision._center_nozzle()
+
+    def test_centering_accepts_a_fresh_frame_that_reaches_target(self):
+        vision = self.make_centering_vision(
+            [
+                {
+                    "x": 600.0,
+                    "y": 360.0,
+                    "frame_width": 1280,
+                    "frame_height": 720,
+                    "stability_px": 0.1,
+                },
+                {
+                    "x": 639.5,
+                    "y": 360.0,
+                    "frame_width": 1280,
+                    "frame_height": 720,
+                    "stability_px": 0.1,
+                },
+            ],
+            [
+                {
+                    "move_x": 0.1,
+                    "move_y": 0.0,
+                    "distance_mm": 0.1,
+                    "estimated_uncertainty_mm": 0.005,
+                },
+                {
+                    "move_x": 0.001,
+                    "move_y": 0.0,
+                    "distance_mm": 0.001,
+                    "estimated_uncertainty_mm": 0.005,
+                },
+            ],
+        )
+        centered, observation = vision._center_nozzle()
+        self.assertGreater(centered[0], 100.0)
+        self.assertEqual(observation["x"], 639.5)
+
+    def test_centering_rejects_incomplete_host_correction(self):
+        vision = self.make_centering_vision(
+            [
+                {
+                    "x": 640.0,
+                    "y": 360.0,
+                    "frame_width": 1280,
+                    "frame_height": 720,
+                    "stability_px": 0.1,
+                }
+            ],
+            [{"move_x": 0.0, "move_y": 0.0}],
+        )
+        with self.assertRaisesRegex(ToolVisionError, "incomplete"):
+            vision._center_nozzle()
+
+    def test_centering_includes_uncertainty_in_acceptance_gate(self):
+        vision = self.make_centering_vision(
+            [
+                {
+                    "x": 630.0,
+                    "y": 360.0,
+                    "frame_width": 1280,
+                    "frame_height": 720,
+                    "stability_px": 0.1,
+                },
+                {
+                    "x": 639.8,
+                    "y": 360.0,
+                    "frame_width": 1280,
+                    "frame_height": 720,
+                    "stability_px": 0.1,
+                },
+            ],
+            [
+                {
+                    "move_x": 0.010,
+                    "move_y": 0.0,
+                    "estimated_uncertainty_mm": 0.010,
+                },
+                {
+                    "move_x": 0.001,
+                    "move_y": 0.0,
+                    "estimated_uncertainty_mm": 0.005,
+                },
+            ],
+        )
+        centered, _ = vision._center_nozzle()
+        self.assertGreater(centered[0], 100.0)
+
+
 class ThermalCalibrationTests(unittest.TestCase):
     class FakeGcode:
         def __init__(self, events):
@@ -181,6 +329,49 @@ class ThermalCalibrationTests(unittest.TestCase):
         self.assertIn(("template", "abort", 1), events)
         self.assertIn(("gcode", "M104 T0 S0"), events)
         self.assertIn(("gcode", "M104 T1 S0"), events)
+
+    def test_xy_rehydrates_host_before_any_heating_or_toolchange(self):
+        with TemporaryDirectory() as directory:
+            vision, events = self.make_vision(Path(directory) / "results.json")
+            vision.state["stations"]["camera"] = {}
+            vision.state["vision"] = {
+                "profile": {"schema_version": 1},
+                "transform": {"schema_version": 2},
+            }
+            vision._configure_server = lambda include_learned=True: events.append(
+                ("configure", include_learned)
+            )
+
+            def measure(number, reference):
+                events.append(("measure_xy", number))
+                vision.results[str(number)] = {"x": 0.0, "y": 0.0}
+                return [100.0, 100.0, 5.0]
+
+            vision._measure_xy = measure
+            vision._calibrate_all(self.FakeCommand(events), "XY", 150.0)
+
+        self.assertEqual(events[0], ("configure", True))
+        self.assertLess(
+            events.index(("configure", True)),
+            events.index(("gcode", "M104 T0 S150.0")),
+        )
+        self.assertLess(
+            events.index(("configure", True)), events.index(("select", 0))
+        )
+
+    def test_old_transform_schema_fails_before_heating(self):
+        with TemporaryDirectory() as directory:
+            vision, events = self.make_vision(Path(directory) / "results.json")
+            vision.state["stations"]["camera"] = {}
+            vision.state["vision"] = {
+                "profile": {"schema_version": 1},
+                "transform": {"schema_version": 1},
+            }
+            with self.assertRaisesRegex(ToolVisionError, "older safety schema"):
+                vision._calibrate_all(self.FakeCommand(events), "XY", 150.0)
+
+        self.assertFalse(any(event[0] == "gcode" for event in events))
+        self.assertFalse(any(event[0] == "select" for event in events))
 
     def test_console_command_defaults_to_axiscope_temperature(self):
         captured = []

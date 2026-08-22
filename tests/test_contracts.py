@@ -2,11 +2,24 @@ import configparser
 import pathlib
 import unittest
 
+from klippy.extras.tool_vision import ToolVision
+from server import __version__
+from server.app import VERSION as SERVER_VERSION
+from server.transform import TransformModel
 
 PROJECT = pathlib.Path(__file__).resolve().parents[1]
 
 
 class RewriteContracts(unittest.TestCase):
+    def test_runtime_version_sources_match(self):
+        self.assertEqual(ToolVision.VERSION, __version__)
+        self.assertEqual(SERVER_VERSION, __version__)
+
+    def test_transform_schema_contract_matches_process_boundary(self):
+        self.assertEqual(
+            ToolVision.TRANSFORM_SCHEMA_VERSION, TransformModel.SCHEMA_VERSION
+        )
+
     def test_example_cfg_has_no_required_camera_or_tuning_values(self):
         parser = configparser.RawConfigParser(
             allow_no_value=True, inline_comment_prefixes=("#", ";"), strict=True

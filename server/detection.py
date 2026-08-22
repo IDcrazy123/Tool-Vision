@@ -115,6 +115,8 @@ class NozzleDetector:
         if self.profile is None:
             raise DetectionError("camera detector has not been taught")
         timeout = self.DETECT_TIMEOUT if timeout is None else float(timeout)
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise DetectionError("detection timeout must be a positive finite value")
         deadline = time.monotonic() + timeout
         consecutive = []
         last_reason = "no candidate"
@@ -168,6 +170,10 @@ class NozzleDetector:
             raise DetectionError("camera returned an invalid frame")
         if frame.shape[0] < 64 or frame.shape[1] < 64:
             raise DetectionError("camera frame is too small for nozzle detection")
+        if len(frame.shape) != 3 or frame.shape[2] != 3:
+            raise DetectionError("camera frame must contain three BGR channels")
+        if getattr(frame, "dtype", None) != np.uint8:
+            raise DetectionError("camera frame must use 8-bit BGR pixels")
 
     def _validate_resolution(self, frame):
         self._validate_frame(frame)
@@ -185,7 +191,11 @@ class NozzleDetector:
     def _validate_profile(profile):
         if not isinstance(profile, dict):
             raise DetectionError("detector profile must be an object")
-        if int(profile.get("schema_version", -1)) != NozzleDetector.PROFILE_SCHEMA:
+        try:
+            schema_version = int(profile.get("schema_version", -1))
+        except (TypeError, ValueError):
+            raise DetectionError("unsupported detector profile schema")
+        if schema_version != NozzleDetector.PROFILE_SCHEMA:
             raise DetectionError("unsupported detector profile schema")
         strategy = profile.get("strategy")
         if strategy not in STRATEGIES:
@@ -193,6 +203,10 @@ class NozzleDetector:
         try:
             width = int(profile["frame_width"])
             height = int(profile["frame_height"])
+            if not isinstance(profile["target_ratio"], (list, tuple)) or len(
+                profile["target_ratio"]
+            ) != 2:
+                raise ValueError
             target = [float(value) for value in profile["target_ratio"]]
             area = float(profile["area_ratio"])
             radius = float(profile["radius_ratio"])
@@ -206,6 +220,8 @@ class NozzleDetector:
         if not (0 <= target[0] <= 1 and 0 <= target[1] <= 1):
             raise DetectionError("detector target is outside the frame")
         if not (0 < area < 0.25 and 0 < radius < 0.5):
+            raise DetectionError("detector geometry is invalid")
+        if not (0 < circularity <= 1 and 0 < convexity <= 1):
             raise DetectionError("detector geometry is invalid")
         clean = dict(profile)
         clean.update(
@@ -314,7 +330,25 @@ class NozzleDetector:
             candidate = dict(item)
             candidate["confidence"] = max(0.0, min(1.0, score))
             ranked.append(candidate)
-        return max(ranked, key=lambda item: item["confidence"]) if ranked else None
+        if not ranked:
+            return None
+        ranked.sort(key=lambda item: item["confidence"], reverse=True)
+        best = ranked[0]
+        for other in ranked[1:]:
+            distance = math.hypot(best["x"] - other["x"], best["y"] - other["y"])
+            # RETR_LIST can return inner and outer contours for the same edge.
+            # Collapse only candidates whose centers agree relative to their
+            # learned-scale radii; two spatially distinct profile matches are
+            # ambiguous regardless of which happens to be closer to the target.
+            same_object = max(
+                2.0, min(best["radius_px"], other["radius_px"]) * 0.25
+            )
+            if distance > same_object:
+                raise DetectionError(
+                    "multiple distinct objects match the learned nozzle profile; "
+                    "clean the nozzle/view and retry"
+                )
+        return best
 
     def _stable_observation(self, candidates, frame):
         xs = [item["x"] for item in candidates]

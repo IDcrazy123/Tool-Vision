@@ -70,6 +70,31 @@ class LearnedDetectionTests(unittest.TestCase):
         with self.assertRaises(DetectionError):
             self.detector.learn(StaticCamera(blank))
 
+    def test_runtime_rejects_two_distinct_profile_matches(self):
+        self.detector.learn(StaticCamera(nozzle_frame(radius=20)))
+        ambiguous = nozzle_frame(radius=20)
+        cv2.circle(ambiguous, (700, 330), 20, (25, 25, 25), -1)
+        with self.assertRaisesRegex(DetectionError, "multiple|ambiguous"):
+            self.detector.detect_stable(StaticCamera(ambiguous), timeout=1)
+
+    def test_profile_rejects_out_of_range_shape_thresholds(self):
+        profile = self.detector.learn(StaticCamera(nozzle_frame()))["profile"]
+        profile["min_circularity"] = -0.1
+        with self.assertRaisesRegex(DetectionError, "geometry"):
+            NozzleDetector(profile)
+
+    def test_profile_rejects_non_numeric_schema_as_domain_error(self):
+        profile = self.detector.learn(StaticCamera(nozzle_frame()))["profile"]
+        profile["schema_version"] = "invalid"
+        with self.assertRaisesRegex(DetectionError, "schema"):
+            NozzleDetector(profile)
+
+    def test_invalid_frame_shape_raises_domain_error(self):
+        self.detector.learn(StaticCamera(nozzle_frame()))
+        grayscale = np.full((720, 1280), 127, dtype=np.uint8)
+        with self.assertRaisesRegex(DetectionError, "BGR"):
+            self.detector.detect_frame(grayscale)
+
 
 if __name__ == "__main__":
     unittest.main()
