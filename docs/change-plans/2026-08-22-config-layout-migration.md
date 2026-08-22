@@ -107,5 +107,6 @@ deleted by install/uninstall and therefore remains independently recoverable.
 - No production config/service/runtime was changed by these tests. Full
   systemd/pip image install, printer restore drill and post-Moonraker-refresh
   check remain pre-release gates; R-007/R-009 stay open.
-- Commit/remote branch/release tag evidence is added after the clean commit and
-  push.
+- Implementation commit: `4385b06` (`feat: prepare manual ToolVision config
+  migration`). Remote branch/hash and semantic release-tag verification are
+  recorded in the task handoff after push.
